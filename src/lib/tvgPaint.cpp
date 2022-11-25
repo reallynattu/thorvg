@@ -104,6 +104,7 @@ Paint* Paint::Impl::duplicate()
     }
 
     ret->pImpl->opacity = opacity;
+    ret->pImpl->name = name;
 
     if (compData) ret->pImpl->composite(ret, compData->target->duplicate(), compData->method);
 
@@ -405,3 +406,18 @@ uint32_t Paint::identifier() const noexcept
 {
     return pImpl->id;
 }
+
+
+Result Paint::name(std::string name) const noexcept
+{
+    if (name.length() > 128) return Result::InvalidArguments;
+    pImpl->name = name;
+    return Result::Success;
+}
+
+
+std::string Paint::name() const noexcept
+{
+    return pImpl->name;
+}
+
