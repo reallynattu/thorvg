@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThorVG Build Configurator</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface-hover: #1a1a25;
+      --border: #2a2a35;
+      --text: #e4e4e7;
+      --text-muted: #71717a;
+      --primary: #8b5cf6;
+      --primary-hover: #a78bfa;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --accent-blue: #3b82f6;
+      --accent-cyan: #06b6d4;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 3rem;
+      padding: 2rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--accent-cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 2rem;
+    }
+
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+    }
+
+    .panel-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .panel-title .icon {
+      width: 20px;
+      height: 20px;
+      opacity: 0.7;
+    }
+
+    .section {
+      margin-bottom: 1.5rem;
+    }
+
+    .section:last-child {
+      margin-bottom: 0;
+    }
+
+    .section-header {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .options-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 0.5rem;
+    }
+
+    .option {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+
+    .option:hover {
+      background: var(--surface-hover);
+      border-color: var(--primary);
+    }
+
+    .option.selected {
+      background: rgba(139, 92, 246, 0.1);
+      border-color: var(--primary);
+    }
+
+    .option input {
+      display: none;
+    }
+
+    .checkbox {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .option.selected .checkbox {
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+
+    .checkbox svg {
+      width: 12px;
+      height: 12px;
+      stroke: white;
+      stroke-width: 3;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .option.selected .checkbox svg {
+      opacity: 1;
+    }
+
+    .option-label {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .option-desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toggle-row:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .toggle-label {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .toggle-desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle.active {
+      background: var(--primary);
+    }
+
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
+    }
+
+    .toggle.active::after {
+      transform: translateX(20px);
+    }
+
+    /* Sidebar */
+    .sidebar {
+      position: sticky;
+      top: 2rem;
+      height: fit-content;
+    }
+
+    .command-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--accent-cyan);
+      margin-bottom: 1rem;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .size-estimate {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem;
+      background: var(--bg);
+      border-radius: 10px;
+      margin-bottom: 1rem;
+    }
+
+    .size-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .size-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--success);
+    }
+
+    .size-bar {
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+    }
+
+    .size-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--success), var(--primary));
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 0.875rem 1.5rem;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: var(--surface-hover);
+      color: var(--text);
+      border: 1px solid var(--border);
+      margin-top: 0.5rem;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--primary);
+    }
+
+    .btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* Build Output */
+    .output-panel {
+      margin-top: 2rem;
+      display: none;
+    }
+
+    .output-panel.visible {
+      display: block;
+    }
+
+    .output-box {
+      background: #000;
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      max-height: 400px;
+      overflow-y: auto;
+      color: #22c55e;
+    }
+
+    .output-box .error {
+      color: var(--danger);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 1rem;
+    }
+
+    .status-badge.building {
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--warning);
+    }
+
+    .status-badge.success {
+      background: rgba(34, 197, 94, 0.1);
+      color: var(--success);
+    }
+
+    .status-badge.error {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Presets */
+    .presets {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+
+    .preset {
+      padding: 0.5rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .preset:hover {
+      border-color: var(--primary);
+      background: rgba(139, 92, 246, 0.1);
+    }
+
+    /* Tooltip */
+    .info-icon {
+      width: 14px;
+      height: 14px;
+      color: var(--text-muted);
+      cursor: help;
+    }
+
+    /* Result files */
+    .result-files {
+      margin-top: 1rem;
+    }
+
+    .result-file {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem;
+      background: var(--bg);
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
+    }
+
+    .result-file-name {
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+
+    .result-file-size {
+      font-weight: 600;
+      color: var(--success);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>⚡ ThorVG Build Configurator</h1>
+      <p>Create optimized custom builds by selecting only what you need</p>
+    </header>
+
+    <div class="presets">
+      <button class="preset" onclick="applyPreset('minimal')">🪶 Minimal</button>
+      <button class="preset" onclick="applyPreset('lottie')">🎬 Lottie Only</button>
+      <button class="preset" onclick="applyPreset('svg')">📐 SVG Only</button>
+      <button class="preset" onclick="applyPreset('full')">🎯 Full Featured</button>
+      <button class="preset" onclick="applyPreset('webasm')">🌐 WebAssembly</button>
+    </div>
+
+    <div class="grid">
+      <div class="main-content">
+        <!-- Engines -->
+        <div class="panel section">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Render Engines
+          </div>
+          <div class="section-header">Select rendering backends</div>
+          <div class="options-grid" id="engines">
+            <label class="option selected" data-value="sw">
+              <input type="checkbox" name="engines" value="sw" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">Software</div>
+                <div class="option-desc">CPU rendering</div>
+              </div>
+            </label>
+            <label class="option" data-value="gl">
+              <input type="checkbox" name="engines" value="gl">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">OpenGL</div>
+                <div class="option-desc">GPU rendering</div>
+              </div>
+            </label>
+            <label class="option" data-value="wg">
+              <input type="checkbox" name="engines" value="wg">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">WebGPU</div>
+                <div class="option-desc">Modern GPU</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Loaders -->
+        <div class="panel section">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            File Loaders
+          </div>
+          <div class="section-header">Enable format support</div>
+          <div class="options-grid" id="loaders">
+            <label class="option selected" data-value="svg">
+              <input type="checkbox" name="loaders" value="svg" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">SVG</div>
+                <div class="option-desc">~80KB</div>
+              </div>
+            </label>
+            <label class="option selected" data-value="lottie">
+              <input type="checkbox" name="loaders" value="lottie" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">Lottie</div>
+                <div class="option-desc">~450KB</div>
+              </div>
+            </label>
+            <label class="option" data-value="png">
+              <input type="checkbox" name="loaders" value="png">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">PNG</div>
+                <div class="option-desc">~60KB</div>
+              </div>
+            </label>
+            <label class="option" data-value="jpg">
+              <input type="checkbox" name="loaders" value="jpg">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">JPEG</div>
+                <div class="option-desc">~45KB</div>
+              </div>
+            </label>
+            <label class="option" data-value="webp">
+              <input type="checkbox" name="loaders" value="webp">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">WebP</div>
+                <div class="option-desc">~180KB</div>
+              </div>
+            </label>
+            <label class="option selected" data-value="ttf">
+              <input type="checkbox" name="loaders" value="ttf" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">TTF</div>
+                <div class="option-desc">~35KB</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Savers -->
+        <div class="panel section">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            File Savers
+          </div>
+          <div class="section-header">Enable export formats</div>
+          <div class="options-grid" id="savers">
+            <label class="option" data-value="gif">
+              <input type="checkbox" name="savers" value="gif">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">GIF</div>
+                <div class="option-desc">~25KB</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Toggles -->
+        <div class="panel section">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+            Build Options
+          </div>
+          
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">Multi-threading</span>
+              <span class="toggle-desc">Parallel task scheduler</span>
+            </div>
+            <div class="toggle active" data-option="threads" onclick="toggleOption(this)"></div>
+          </div>
+          
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">Partial Rendering</span>
+              <span class="toggle-desc">Only redraw changed regions</span>
+            </div>
+            <div class="toggle active" data-option="partial" onclick="toggleOption(this)"></div>
+          </div>
+          
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">SIMD</span>
+              <span class="toggle-desc">CPU vectorization (AVX/NEON)</span>
+            </div>
+            <div class="toggle" data-option="simd" onclick="toggleOption(this)"></div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">File I/O</span>
+              <span class="toggle-desc">Enable file system access</span>
+            </div>
+            <div class="toggle active" data-option="file" onclick="toggleOption(this)"></div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">Static Linking</span>
+              <span class="toggle-desc">Force static modules</span>
+            </div>
+            <div class="toggle" data-option="static" onclick="toggleOption(this)"></div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">Debug Logging</span>
+              <span class="toggle-desc">Enable log messages</span>
+            </div>
+            <div class="toggle" data-option="log" onclick="toggleOption(this)"></div>
+          </div>
+        </div>
+
+        <!-- Bindings & Extras -->
+        <div class="panel section">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+            Bindings & Extras
+          </div>
+          
+          <div class="section-header">API Bindings</div>
+          <div class="options-grid" id="bindings">
+            <label class="option" data-value="capi">
+              <input type="checkbox" name="bindings" value="capi">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">C API</div>
+                <div class="option-desc">C bindings</div>
+              </div>
+            </label>
+          </div>
+
+          <div class="section-header" style="margin-top: 1rem;">Extra Features</div>
+          <div class="options-grid" id="extra">
+            <label class="option selected" data-value="lottie_exp">
+              <input type="checkbox" name="extra" value="lottie_exp" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">Lottie Expressions</div>
+                <div class="option-desc">~200KB</div>
+              </div>
+            </label>
+            <label class="option selected" data-value="openmp">
+              <input type="checkbox" name="extra" value="openmp" checked>
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">OpenMP</div>
+                <div class="option-desc">Parallelization</div>
+              </div>
+            </label>
+            <label class="option" data-value="opengl_es">
+              <input type="checkbox" name="extra" value="opengl_es">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">OpenGL ES</div>
+                <div class="option-desc">Mobile GPU</div>
+              </div>
+            </label>
+          </div>
+
+          <div class="section-header" style="margin-top: 1rem;">Tools</div>
+          <div class="options-grid" id="tools">
+            <label class="option" data-value="svg2png">
+              <input type="checkbox" name="tools" value="svg2png">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">svg2png</div>
+                <div class="option-desc">CLI tool</div>
+              </div>
+            </label>
+            <label class="option" data-value="lottie2gif">
+              <input type="checkbox" name="tools" value="lottie2gif">
+              <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <div>
+                <div class="option-label">lottie2gif</div>
+                <div class="option-desc">CLI tool</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="panel">
+          <div class="panel-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            Build Command
+          </div>
+          <div class="command-box" id="command"></div>
+          
+          <div class="size-estimate">
+            <span class="size-label">Estimated Size</span>
+            <span class="size-value" id="size-estimate">~850KB</span>
+          </div>
+          <div class="size-bar">
+            <div class="size-bar-fill" id="size-bar" style="width: 60%"></div>
+          </div>
+
+          <button class="btn btn-primary" onclick="runBuild()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Build Now
+          </button>
+          <button class="btn btn-secondary" onclick="copyCommand()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy Command
+          </button>
+        </div>
+
+        <!-- Build Output -->
+        <div class="panel output-panel" id="output-panel">
+          <div class="panel-title">Build Output</div>
+          <div class="status-badge building" id="status-badge">
+            <div class="spinner"></div>
+            <span>Building...</span>
+          </div>
+          <div class="output-box" id="output"></div>
+          <div class="result-files" id="result-files"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    const state = {
+      engines: ['sw'],
+      loaders: ['svg', 'lottie', 'ttf'],
+      savers: [],
+      bindings: [],
+      extra: ['lottie_exp', 'openmp'],
+      tools: [],
+      threads: true,
+      partial: true,
+      simd: false,
+      file: true,
+      static: false,
+      log: false
+    };
+
+    // Size estimates (in KB)
+    const sizes = {
+      base: 150,
+      engines: { sw: 200, gl: 180, wg: 150 },
+      loaders: { svg: 80, lottie: 450, png: 60, jpg: 45, webp: 180, ttf: 35 },
+      savers: { gif: 25 },
+      extra: { lottie_exp: 200, openmp: 0, opengl_es: 0 },
+      bindings: { capi: 20 }
+    };
+
+    // Presets
+    const presets = {
+      minimal: {
+        engines: ['sw'], loaders: [], savers: [], bindings: [], extra: [], tools: [],
+        threads: false, partial: false, simd: false, file: false, static: true, log: false
+      },
+      lottie: {
+        engines: ['sw'], loaders: ['lottie'], savers: [], bindings: [], extra: ['lottie_exp'], tools: [],
+        threads: true, partial: true, simd: false, file: true, static: false, log: false
+      },
+      svg: {
+        engines: ['sw'], loaders: ['svg', 'png'], savers: [], bindings: [], extra: [], tools: [],
+        threads: true, partial: true, simd: false, file: true, static: false, log: false
+      },
+      full: {
+        engines: ['sw', 'gl'], loaders: ['svg', 'lottie', 'png', 'jpg', 'ttf'], savers: ['gif'], 
+        bindings: ['capi'], extra: ['lottie_exp', 'openmp'], tools: ['svg2png', 'lottie2gif'],
+        threads: true, partial: true, simd: true, file: true, static: false, log: false
+      },
+      webasm: {
+        engines: ['sw'], loaders: ['lottie', 'svg'], savers: [], bindings: ['capi'], extra: [], tools: [],
+        threads: false, partial: true, simd: false, file: false, static: true, log: false
+      }
+    };
+
+    function applyPreset(name) {
+      const preset = presets[name];
+      Object.assign(state, preset);
+      updateUI();
+      updateCommand();
+    }
+
+    function updateUI() {
+      // Update checkboxes
+      ['engines', 'loaders', 'savers', 'bindings', 'extra', 'tools'].forEach(group => {
+        document.querySelectorAll(`#${group} .option`).forEach(opt => {
+          const value = opt.dataset.value;
+          const checked = state[group].includes(value);
+          opt.classList.toggle('selected', checked);
+          opt.querySelector('input').checked = checked;
+        });
+      });
+
+      // Update toggles
+      document.querySelectorAll('.toggle').forEach(toggle => {
+        const option = toggle.dataset.option;
+        toggle.classList.toggle('active', state[option]);
+      });
+    }
+
+    function toggleOption(el) {
+      const option = el.dataset.option;
+      state[option] = !state[option];
+      el.classList.toggle('active');
+      updateCommand();
+    }
+
+    function updateCommand() {
+      const parts = ['meson setup build'];
+      
+      if (state.engines.length) parts.push(`-Dengines="${state.engines.join(',')}"`);
+      if (state.loaders.length) parts.push(`-Dloaders="${state.loaders.join(',')}"`);
+      else parts.push(`-Dloaders=""`);
+      if (state.savers.length) parts.push(`-Dsavers="${state.savers.join(',')}"`);
+      if (state.bindings.length) parts.push(`-Dbindings="${state.bindings.join(',')}"`);
+      if (state.extra.length) parts.push(`-Dextra="${state.extra.join(',')}"`);
+      else parts.push(`-Dextra=""`);
+      if (state.tools.length) parts.push(`-Dtools="${state.tools.join(',')}"`);
+      
+      parts.push(`-Dthreads=${state.threads}`);
+      parts.push(`-Dpartial=${state.partial}`);
+      parts.push(`-Dsimd=${state.simd}`);
+      parts.push(`-Dfile=${state.file}`);
+      parts.push(`-Dstatic=${state.static}`);
+      parts.push(`-Dlog=${state.log}`);
+      parts.push('-Dbuildtype=release');
+      parts.push('-Db_ndebug=true');
+
+      document.getElementById('command').textContent = parts.join(' \\\n  ');
+      updateSizeEstimate();
+    }
+
+    function updateSizeEstimate() {
+      let total = sizes.base;
+      state.engines.forEach(e => total += sizes.engines[e] || 0);
+      state.loaders.forEach(l => total += sizes.loaders[l] || 0);
+      state.savers.forEach(s => total += sizes.savers[s] || 0);
+      state.extra.forEach(e => total += sizes.extra[e] || 0);
+      state.bindings.forEach(b => total += sizes.bindings[b] || 0);
+
+      const sizeEl = document.getElementById('size-estimate');
+      const barEl = document.getElementById('size-bar');
+      
+      if (total >= 1000) {
+        sizeEl.textContent = `~${(total / 1000).toFixed(1)}MB`;
+      } else {
+        sizeEl.textContent = `~${total}KB`;
+      }
+
+      // Max around 1.5MB for full build
+      const percent = Math.min((total / 1500) * 100, 100);
+      barEl.style.width = `${percent}%`;
+    }
+
+    function copyCommand() {
+      const cmd = document.getElementById('command').textContent;
+      navigator.clipboard.writeText(cmd.replace(/\\\n\s*/g, ' '));
+      
+      const btn = event.target.closest('.btn');
+      const originalHTML = btn.innerHTML;
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+      setTimeout(() => btn.innerHTML = originalHTML, 2000);
+    }
+
+    async function runBuild() {
+      const outputPanel = document.getElementById('output-panel');
+      const output = document.getElementById('output');
+      const statusBadge = document.getElementById('status-badge');
+      const resultFiles = document.getElementById('result-files');
+
+      outputPanel.classList.add('visible');
+      output.textContent = 'Starting build...\n';
+      statusBadge.className = 'status-badge building';
+      statusBadge.innerHTML = '<div class="spinner"></div><span>Building...</span>';
+      resultFiles.innerHTML = '';
+
+      try {
+        const cmd = document.getElementById('command').textContent.replace(/\\\n\s*/g, ' ');
+        
+        // Send build request to server
+        const response = await fetch('/api/build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const text = decoder.decode(value);
+          output.textContent += text;
+          output.scrollTop = output.scrollHeight;
+        }
+
+        // Check final status
+        const statusResponse = await fetch('/api/build/status');
+        const status = await statusResponse.json();
+
+        if (status.success) {
+          statusBadge.className = 'status-badge success';
+          statusBadge.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span>Build Complete!</span>';
+          
+          if (status.files) {
+            resultFiles.innerHTML = '<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Output Files:</div>';
+            status.files.forEach(f => {
+              resultFiles.innerHTML += `
+                <div class="result-file">
+                  <span class="result-file-name">${f.name}</span>
+                  <span class="result-file-size">${f.size}</span>
+                </div>`;
+            });
+          }
+        } else {
+          statusBadge.className = 'status-badge error';
+          statusBadge.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><span>Build Failed</span>';
+        }
+      } catch (err) {
+        output.textContent += `\nError: ${err.message}\n`;
+        output.innerHTML += '<span class="error">Build server not running. Start with: node server.js</span>';
+        statusBadge.className = 'status-badge error';
+        statusBadge.innerHTML = '<span>Server Error</span>';
+      }
+    }
+
+    // Setup event listeners
+    document.querySelectorAll('.option').forEach(opt => {
+      opt.addEventListener('click', () => {
+        const input = opt.querySelector('input');
+        const group = input.name;
+        const value = input.value;
+        
+        if (state[group].includes(value)) {
+          state[group] = state[group].filter(v => v !== value);
+        } else {
+          state[group].push(value);
+        }
+        
+        opt.classList.toggle('selected');
+        input.checked = !input.checked;
+        updateCommand();
+      });
+    });
+
+    // Initialize
+    updateCommand();
+  </script>
+</body>
+</html>
