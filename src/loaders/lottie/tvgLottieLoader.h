@@ -64,11 +64,13 @@ public:
     Inlist<LottieCustomSlot> slots;     //user custom slot list
     uint32_t curSlot = 0;               //current applied slotcode
 
+    LottieVideoProvider videoProvider = {};
     Key key;
     char* dirName = nullptr;            //base resource directory
 
     bool copy = false;                  //"content" is owned by this loader
     bool build = true;                  //require building the lottie scene
+    bool videoProviderSet = false;
 
     LottieLoader();
     ~LottieLoader();
@@ -100,6 +102,8 @@ public:
     float shorten(float frameNo);  //Reduce the accuracy for performance
     bool tween(float from, float to, float progress);
     bool quality(uint8_t value);
+    void renderer(RenderMethod* renderer) override;
+    Result setVideoProvider(const LottieVideoProvider* provider);
 
 private:
     bool ready();
@@ -109,6 +113,8 @@ private:
     void run(unsigned tid) override;
     void release();
     bool prepare();
+    void clearVideoFrames();
+    void closeVideoAssets();
 };
 
 #endif //_TVG_LOTTIELOADER_H_

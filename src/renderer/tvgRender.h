@@ -59,6 +59,20 @@ static inline bool operator&(const EngineOption a, const EngineOption b)
     return (uint8_t(a) & uint8_t(b));
 }
 
+enum struct RenderSurfaceNativeType : uint8_t
+{
+    None = 0,
+    GlTexture,
+    WgTexture
+};
+
+enum struct RenderSurfaceNativeFlag : uint32_t
+{
+    None = 0,
+    GlTexture = 1,
+    WgTexture = 1 << 1
+};
+
 struct RenderSurface
 {
     union {
@@ -69,9 +83,14 @@ struct RenderSurface
     Key key;                        //a reserved lock for the thread safety
     uint32_t stride = 0;
     uint32_t w = 0, h = 0;
+    uint64_t serial = 0;                    // content revision for mutable image sources
     ColorSpace cs = ColorSpace::Unknown;
     uint8_t channelSize = 0;
     bool premultiplied = false;         //Alpha-premultiplied
+    RenderSurfaceNativeType nativeType = RenderSurfaceNativeType::None;
+    void* nativeHandle = nullptr;
+    uintptr_t nativeId = 0;
+    uint32_t nativeTarget = 0;
 
     RenderSurface()
     {
@@ -83,9 +102,14 @@ struct RenderSurface
         stride = rhs->stride;
         w = rhs->w;
         h = rhs->h;
+        serial = rhs->serial;
         cs = rhs->cs;
         channelSize = rhs->channelSize;
         premultiplied = rhs->premultiplied;
+        nativeType = rhs->nativeType;
+        nativeHandle = rhs->nativeHandle;
+        nativeId = rhs->nativeId;
+        nativeTarget = rhs->nativeTarget;
     }
 };
 
@@ -601,6 +625,7 @@ public:
     //main features
     virtual ~RenderMethod() {}
     virtual bool preUpdate() = 0;
+    virtual uint32_t nativeSurfaceFlags() { return 0; }
     virtual RenderData prepare(const RenderShape& rshape, RenderData data, const Matrix& transform, const Array<RenderData>& clips, uint8_t opacity, RenderUpdateFlag flags, bool clipper) = 0;
     virtual RenderData prepare(RenderSurface* surface, RenderData data, const Matrix& transform, const Array<RenderData>& clips, uint8_t opacity, FilterMethod filter, RenderUpdateFlag flags) = 0;
     virtual bool postUpdate() = 0;

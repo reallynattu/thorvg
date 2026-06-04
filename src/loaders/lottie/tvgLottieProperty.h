@@ -986,6 +986,7 @@ struct LottieBitmap : LottieProperty
     uint32_t size = 0;
     float width = 0.0f;
     float height = 0.0f;
+    bool video = false;
 
     LottieBitmap() : LottieProperty(LottieProperty::Type::Image) {}
 
@@ -1031,6 +1032,7 @@ struct LottieBitmap : LottieProperty
 
         width = rhs.width;
         height = rhs.height;
+        video = rhs.video;
     }
 };
 

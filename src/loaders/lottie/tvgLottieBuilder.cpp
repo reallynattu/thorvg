@@ -23,6 +23,8 @@
 #include <algorithm>
 #include "tvgCommon.h"
 #include "tvgMath.h"
+#include "tvgPicture.h"
+#include "tvgRawLoader.h"
 #include "tvgScene.h"
 #include "tvgText.h"
 #include "tvgLoader.h"
@@ -948,7 +950,211 @@ void LottieBuilder::updateSolid(LottieLayer* layer)
 }
 
 
-void LottieBuilder::updateImage(LottieGroup* layer)
+static void _releaseVideoFrame(LottieVideoFrame& frame)
+{
+    if (frame.release) frame.release(frame.user);
+    frame.release = nullptr;
+    frame.user = nullptr;
+}
+
+
+static bool _validVideoBitmapColorSpace(ColorSpace cs)
+{
+    return cs == ColorSpace::ABGR8888 || cs == ColorSpace::ABGR8888S ||
+           cs == ColorSpace::ARGB8888 || cs == ColorSpace::ARGB8888S;
+}
+
+
+static bool _hasVideoBitmap(const LottieVideoFrame& frame)
+{
+    return frame.data && frame.width > 0 && frame.height > 0 && _validVideoBitmapColorSpace(frame.colorSpace);
+}
+
+
+static RenderSurfaceNativeType _videoNativeType(const LottieVideoFrame& frame, uint32_t flags)
+{
+    static constexpr uint32_t GL_TEXTURE_2D_TARGET = 0x0DE1;
+    if (frame.type == LottieVideoFrameType::GlTexture &&
+        (flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::GlTexture)) &&
+        frame.nativeId != 0 && frame.nativeTarget == GL_TEXTURE_2D_TARGET) {
+        return RenderSurfaceNativeType::GlTexture;
+    }
+    if (frame.type == LottieVideoFrameType::WgTexture &&
+        (flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::WgTexture)) &&
+        frame.nativeHandle) {
+        return RenderSurfaceNativeType::WgTexture;
+    }
+    return RenderSurfaceNativeType::None;
+}
+
+
+static bool _requiresVideoBitmap(uint32_t flags)
+{
+    return flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::BitmapRequired);
+}
+
+
+static bool _hasVideoNative(const LottieVideoFrame& frame, uint32_t flags)
+{
+    return frame.width > 0 && frame.height > 0 && _validVideoBitmapColorSpace(frame.colorSpace) &&
+           _videoNativeType(frame, flags) != RenderSurfaceNativeType::None;
+}
+
+
+static bool _hasUsableVideoFrame(const LottieVideoFrame& frame, uint32_t flags)
+{
+    if (_hasVideoBitmap(frame)) return true;
+    if (_requiresVideoBitmap(flags)) return false;
+    return _hasVideoNative(frame, flags);
+}
+
+
+static uint32_t _videoFrameRequestFlags(const LottieLayer* layer, uint32_t nativeFlags)
+{
+    auto flags = 0u;
+    auto compositionFallback = false;
+    if (layer->masks.count > 0) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::Mask);
+        compositionFallback = true;
+    }
+    if (layer->matteTarget || layer->matteSrc) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::Matte);
+        compositionFallback = true;
+    }
+    if (layer->effect) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::Effect);
+        compositionFallback = true;
+    }
+    if (layer->blendMethod != BlendMethod::Normal) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::Blend);
+        compositionFallback = true;
+    }
+    if (compositionFallback || nativeFlags == 0) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::BitmapRequired);
+    }
+    if (!compositionFallback && (nativeFlags & static_cast<uint32_t>(RenderSurfaceNativeFlag::GlTexture))) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::GlTexture);
+    }
+    if (!compositionFallback && (nativeFlags & static_cast<uint32_t>(RenderSurfaceNativeFlag::WgTexture))) {
+        flags |= static_cast<uint32_t>(LottieVideoFrameRequestFlag::WgTexture);
+    }
+    return flags;
+}
+
+
+static void _addVideoPicture(LottieGroup* layer, LottieVideo& video)
+{
+    if (video.picture->refCnt() == 1) {
+        layer->scene->add(video.picture);
+    } else {
+        auto picture = static_cast<Picture*>(video.picture->duplicate());
+        video.trackPicture(picture);
+        layer->scene->add(picture);
+    }
+}
+
+
+static void _sizeVideoPicture(LottieVideo& video)
+{
+    if (!video.picture) return;
+
+    video.picture->size(video.width > 0.0f ? video.width : float(video.frameWidth),
+                        video.height > 0.0f ? video.height : float(video.frameHeight));
+}
+
+
+static void _releaseStoredVideoFrame(LottieVideo& video)
+{
+    video.releasePictureRenderData();
+    video.releaseFrame();
+    video.releaseTrackedPictures();
+}
+
+
+static bool _storeVideoFrame(LottieVideo& video, LottieVideoFrame& frame, uint32_t flags)
+{
+    auto hasBitmap = _hasVideoBitmap(frame);
+    auto nativeType = _videoNativeType(frame, flags);
+    if (!hasBitmap && nativeType == RenderSurfaceNativeType::None) return false;
+    if (frame.width == 0 || frame.height == 0 || !_validVideoBitmapColorSpace(frame.colorSpace)) return false;
+
+    if (hasBitmap) {
+        auto count64 = uint64_t(frame.width) * uint64_t(frame.height);
+        if (count64 > UINT32_MAX) return false;
+        auto count = static_cast<uint32_t>(count64);
+
+        if (count > video.pixelsCapacity) {
+            auto pixels = tvg::malloc<uint32_t>(sizeof(uint32_t) * count);
+            if (!pixels) return false;
+            tvg::free(video.pixels);
+            video.pixels = pixels;
+            video.pixelsCapacity = count;
+        }
+
+        memcpy(video.pixels, frame.data, sizeof(uint32_t) * count);
+    }
+
+    video.frameWidth = frame.width;
+    video.frameHeight = frame.height;
+    video.colorSpace = frame.colorSpace;
+    video.providerSerial = frame.serial;
+    if (++video.surfaceSerial == 0) ++video.surfaceSerial;
+
+    if (video.picture) {
+        auto pImpl = to<PictureImpl>(video.picture);
+        if (!pImpl->loader || pImpl->loader->type != FileType::Raw) return false;
+        if (!static_cast<RawLoader*>(pImpl->loader)->update(hasBitmap ? video.pixels : nullptr, video.frameWidth, video.frameHeight, video.colorSpace, video.surfaceSerial,
+                                                            nativeType, frame.nativeHandle, frame.nativeId, frame.nativeTarget)) return false;
+        _releaseStoredVideoFrame(video);
+        if (nativeType != RenderSurfaceNativeType::None) {
+            video.frameRelease = frame.release;
+            video.frameUser = frame.user;
+            video.frameNative = true;
+            frame.release = nullptr;
+            frame.user = nullptr;
+        }
+        _sizeVideoPicture(video);
+        PAINT(video.picture)->mark(RenderUpdateFlag::Image);
+        return true;
+    }
+
+    auto picture = Picture::gen();
+    auto loader = new RawLoader;
+    if (!loader->update(hasBitmap ? video.pixels : nullptr, video.frameWidth, video.frameHeight, video.colorSpace, video.surfaceSerial,
+                        nativeType, frame.nativeHandle, frame.nativeId, frame.nativeTarget)) {
+        delete(loader);
+        Paint::rel(picture);
+        return false;
+    }
+    if (to<PictureImpl>(picture)->load(loader) != Result::Success) {
+        Paint::rel(picture);
+        return false;
+    }
+
+    picture->ref();
+    video.picture = picture;
+    _releaseStoredVideoFrame(video);
+    if (nativeType != RenderSurfaceNativeType::None) {
+        video.frameRelease = frame.release;
+        video.frameUser = frame.user;
+        video.frameNative = true;
+        frame.release = nullptr;
+        frame.user = nullptr;
+    }
+    _sizeVideoPicture(video);
+
+    return true;
+}
+
+
+static void _syncLayerVideoFrameState(LottieVideo& layerVideo, const LottieVideo& assetVideo)
+{
+    layerVideo.width = assetVideo.width;
+    layerVideo.height = assetVideo.height;
+}
+
+
+void LottieBuilder::updateImage(LottieComposition* comp, LottieGroup* layer, float frameNo)
 {
     if (layer->children.empty()) return;
 
@@ -958,18 +1164,99 @@ void LottieBuilder::updateImage(LottieGroup* layer)
         return;
     }
 
-    auto picture = image->bitmap.picture;
-    if (!picture) return;
+    auto addPoster = [&]() {
+        auto picture = image->bitmap.picture;
+        if (!picture) return;
 
-    //resolve an image asset if need
-    if (resolver && !image->resolved) {
-        resolver->func(picture, image->bitmap.path, resolver->data);
-        picture->size(image->bitmap.width, image->bitmap.height);
-        image->resolved = true;
+        //resolve an image asset if need
+        if (resolver && !image->resolved) {
+            resolver->func(picture, image->bitmap.path, resolver->data);
+            picture->size(image->bitmap.width, image->bitmap.height);
+            image->resolved = true;
+        }
+
+        //LottieImage can be shared among other layers
+        layer->scene->add(picture->refCnt() == 1 ? picture : picture->duplicate());
+    };
+
+    auto videoLayer = static_cast<LottieLayer*>(layer);
+    auto& assetVideo = image->video;
+    auto& layerVideo = videoLayer->video;
+    _syncLayerVideoFrameState(layerVideo, assetVideo);
+
+    auto addCachedVideo = [&]() {
+        if (!layerVideo.picture) return false;
+        _addVideoPicture(layer, layerVideo);
+        return true;
+    };
+
+    if (image->videoOverridden || !assetVideo.valid() || !videoProvider || !videoProvider->frame) {
+        addPoster();
+        return;
     }
 
-    //LottieImage can be shared among other layers
-    layer->scene->add(picture->refCnt() == 1 ? picture : picture->duplicate());
+    auto asset = assetVideo.info();
+    auto mediaTime = double(videoLayer->remap(comp, frameNo, exps) / comp->frameRate);
+
+    if (mediaTime < 0.0) {
+        layerVideo.clearFrame();
+        addPoster();
+        return;
+    }
+
+    if (assetVideo.duration > 0.0f) {
+        auto duration = double(assetVideo.duration);
+        if (assetVideo.loop) {
+            mediaTime = fmod(mediaTime, duration);
+            if (mediaTime < 0.0) mediaTime += duration;
+        } else if (mediaTime > duration) {
+            if (!assetVideo.holdLastFrame) {
+                layerVideo.clearFrame();
+                addPoster();
+                return;
+            }
+            mediaTime = duration;
+        }
+    }
+
+    if (assetVideo.openFailed) {
+        addPoster();
+        return;
+    }
+
+    if (!assetVideo.opened) {
+        if (videoProvider->open && videoProvider->open(&asset, videoProvider->data) != Result::Success) {
+            assetVideo.openFailed = true;
+            addPoster();
+            return;
+        }
+        assetVideo.opened = true;
+        assetVideo.openFailed = false;
+    }
+
+    LottieVideoFrameRequest request = {&asset, mediaTime, layerVideo.providerSerial, _videoFrameRequestFlags(videoLayer, videoNativeFlags)};
+    LottieVideoFrame frame;
+    auto result = videoProvider->frame(&request, &frame, videoProvider->data);
+
+    if (result != Result::Success || frame.type == LottieVideoFrameType::None || !_hasUsableVideoFrame(frame, request.flags)) {
+        _releaseVideoFrame(frame);
+        if (!addCachedVideo()) addPoster();
+        return;
+    }
+
+    if (frame.serial != 0 && frame.serial == layerVideo.providerSerial && layerVideo.picture) {
+        _releaseVideoFrame(frame);
+        addCachedVideo();
+        return;
+    }
+
+    if (!_storeVideoFrame(layerVideo, frame, request.flags)) {
+        _releaseVideoFrame(frame);
+        if (!addCachedVideo()) addPoster();
+        return;
+    }
+    _releaseVideoFrame(frame);
+    addCachedVideo();
 }
 
 
@@ -1557,7 +1844,7 @@ void LottieBuilder::updateLayer(LottieComposition* comp, Scene* scene, LottieLay
             break;
         }
         case LottieLayer::Image: {
-            updateImage(layer);
+            updateImage(comp, layer, frameNo);
             break;
         }
         case LottieLayer::Text: {

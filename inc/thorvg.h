@@ -116,6 +116,138 @@ enum struct ColorSpace : uint8_t
     Unknown = 255      ///< Unknown channel data. This is reserved for an initial ColorSpace value. @since 1.0
 };
 
+/**
+ * @brief Enumeration specifying the type of frame returned by a Lottie video provider.
+ *
+ * @note Experimental API
+ */
+enum struct LottieVideoFrameType : uint8_t
+{
+    None = 0,       ///< No frame is available yet; ThorVG may reuse the previous frame or poster fallback.
+    Bitmap,         ///< A CPU bitmap frame is available.
+    GlTexture,      ///< An OpenGL texture handle is available, with bitmap fallback when requested.
+    WgTexture,      ///< A WebGPU texture handle is available, with bitmap fallback when requested.
+    NativeHandle    ///< A platform-native frame handle is available. Reserved for future backend-native import.
+};
+
+
+/**
+ * @brief Bit flags describing constraints for a Lottie video frame request.
+ *
+ * @note Experimental API
+ */
+enum struct LottieVideoFrameRequestFlag : uint32_t
+{
+    None = 0,              ///< No request flags are set.
+    BitmapRequired = 1,    ///< ThorVG needs a CPU bitmap or bitmap fallback for this request.
+    Mask = 1 << 1,         ///< The video layer has masks.
+    Matte = 1 << 2,        ///< The video layer is used by or composed with a track matte.
+    Effect = 1 << 3,       ///< The video layer has effects.
+    Blend = 1 << 4,        ///< The video layer uses a non-normal blend mode.
+    GlTexture = 1 << 5,    ///< ThorVG can consume @ref LottieVideoFrameType::GlTexture for this request.
+    WgTexture = 1 << 6,    ///< ThorVG can consume @ref LottieVideoFrameType::WgTexture for this request.
+    NativeHandle = 1 << 7  ///< ThorVG can consume @ref LottieVideoFrameType::NativeHandle for this request.
+};
+
+
+/**
+ * @brief Describes a video asset found in a Lottie image asset extension.
+ *
+ * @note Experimental API
+ */
+struct LottieVideoAssetInfo
+{
+    const char* assetId = nullptr;      ///< The Lottie asset id.
+    const char* src = nullptr;          ///< The video source path or URI.
+    const char* mime = nullptr;         ///< The video MIME type, if specified.
+    float width = 0.0f;                 ///< The asset width in pixels.
+    float height = 0.0f;                ///< The asset height in pixels.
+    float duration = 0.0f;              ///< The video duration in seconds.
+    float frameRate = 0.0f;             ///< The video frame rate, if specified.
+    bool loop = false;                  ///< Whether the video should loop.
+    bool holdLastFrame = true;          ///< Whether a non-looping video should hold the last frame.
+    bool muted = true;                  ///< Whether the video asset is expected to be muted.
+};
+
+
+/**
+ * @brief Describes the frame requested from a Lottie video provider.
+ *
+ * @note Experimental API
+ */
+struct LottieVideoFrameRequest
+{
+    const LottieVideoAssetInfo* asset = nullptr;   ///< The video asset metadata.
+    double time = 0.0;                             ///< Requested media time in seconds.
+    uint64_t serialHint = 0;                       ///< Last accepted frame serial for this layer.
+    uint32_t flags = 0;                            ///< Bitwise combination of @ref LottieVideoFrameRequestFlag values.
+};
+
+
+/**
+ * @brief Describes a decoded Lottie video frame returned by a provider.
+ *
+ * For @ref LottieVideoFrameType::Bitmap, @p data must point to tightly packed
+ * 32-bit pixels with @p width pixels per row and @p colorSpace must be
+ * @ref ColorSpace::ABGR8888, @ref ColorSpace::ARGB8888,
+ * @ref ColorSpace::ABGR8888S, or @ref ColorSpace::ARGB8888S. The color space
+ * declares both channel order and whether alpha is premultiplied or straight.
+ * ThorVG copies bitmap pixels before returning from the frame callback in this
+ * initial API.
+ * For @ref LottieVideoFrameType::GlTexture, @p nativeId is the GL texture id and
+ * @p nativeTarget must be GL_TEXTURE_2D. For @ref LottieVideoFrameType::WgTexture,
+ * @p nativeHandle is a WGPUTexture. Native frames must still set @p width,
+ * @p height, and @p colorSpace. Providers may also set @p data on native frames
+ * to provide a portable bitmap fallback.
+ * If @ref LottieVideoFrameRequestFlag::BitmapRequired is set in the request
+ * flags, ThorVG needs a bitmap frame or bitmap fallback for correct rendering,
+ * even when a native support flag is also present. Native-only frames should be
+ * returned only when the corresponding native support flag is set and
+ * @ref LottieVideoFrameRequestFlag::BitmapRequired is not set.
+ * @p timestamp and @p duration describe the provider-selected media frame and
+ * are informational in this initial API; ThorVG uses the request time and
+ * @p serial for frame acquisition and cache invalidation.
+ *
+ * @note Experimental API
+ */
+struct LottieVideoFrame
+{
+    LottieVideoFrameType type = LottieVideoFrameType::None;    ///< The returned frame type.
+    const uint32_t* data = nullptr;                            ///< Bitmap pixel data for Bitmap frames, or a bitmap fallback for native frames.
+    uint32_t width = 0;                                        ///< Bitmap width in pixels.
+    uint32_t height = 0;                                       ///< Bitmap height in pixels.
+    ColorSpace colorSpace = ColorSpace::Unknown;               ///< Bitmap color space.
+    double timestamp = 0.0;                                    ///< Returned frame timestamp in seconds. Informational in this initial API.
+    double duration = 0.0;                                     ///< Returned frame duration in seconds. Informational in this initial API.
+    uint64_t serial = 0;                                       ///< Provider-defined content revision.
+    void* nativeHandle = nullptr;                              ///< Backend-native object handle, such as a WGPUTexture.
+    uintptr_t nativeId = 0;                                    ///< Backend-native integer handle, such as a GL texture id.
+    uint32_t nativeTarget = 0;                                 ///< Backend-specific handle target or usage value.
+    void (*release)(void* user) = nullptr;                     ///< Optional release callback for provider-owned frame data.
+    void* user = nullptr;                                      ///< Provider-owned release data.
+};
+
+
+/**
+ * @brief Callback table for providing decoded frames for Lottie video assets.
+ *
+ * ThorVG remains a compositor: the provider owns decoding, seeking, buffering,
+ * and frame lifetime. Returning @ref Result::Success with @ref LottieVideoFrameType::None
+ * or returning @ref Result::InsufficientCondition means no new frame is available.
+ * Callbacks may run on ThorVG's Lottie update task thread. Providers should keep
+ * callbacks bounded and thread-safe, and should return a pending/no-frame result
+ * instead of blocking on decode.
+ *
+ * @note Experimental API
+ */
+struct LottieVideoProvider
+{
+    Result (*open)(const LottieVideoAssetInfo* asset, void* data) = nullptr;      ///< Called once before frames are requested.
+    Result (*frame)(const LottieVideoFrameRequest* request, LottieVideoFrame* out, void* data) = nullptr;   ///< Requests a decoded frame.
+    void (*close)(const char* assetId, void* data) = nullptr;                    ///< Called when an opened asset is released.
+    void* data = nullptr;                                                        ///< User data passed to callbacks.
+};
+
 
 /**
  * @brief Enumeration to specify rendering engine behavior.

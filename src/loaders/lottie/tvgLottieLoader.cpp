@@ -21,7 +21,7 @@
  */
 
 #include "tvgStr.h"
- #include "tvgLottieLoader.h"
+#include "tvgLottieLoader.h"
 #include "tvgLottieModel.h"
 #include "tvgLottieParser.h"
 #include "tvgLottieBuilder.h"
@@ -30,6 +30,29 @@
 /************************************************************************/
 /* Internal Class Implementation                                        */
 /************************************************************************/
+
+static void _clearVideoFrames(LottieLayer* layer)
+{
+    if (!layer) return;
+
+    layer->video.clearFrame();
+    ARRAY_FOREACH(p, layer->children) {
+        if ((*p)->type == LottieObject::Type::Layer) _clearVideoFrames(static_cast<LottieLayer*>(*p));
+    }
+}
+
+
+static void _clearVideoFrames(LottieComposition* comp)
+{
+    if (!comp) return;
+
+    _clearVideoFrames(comp->root);
+    ARRAY_FOREACH(p, comp->assets) {
+        if ((*p)->type == LottieObject::Type::Layer) _clearVideoFrames(static_cast<LottieLayer*>(*p));
+        else if ((*p)->type == LottieObject::Type::Image) static_cast<LottieImage*>(*p)->video.clearFrame();
+    }
+}
+
 
 LottieCustomSlot::~LottieCustomSlot()
 {
@@ -92,6 +115,8 @@ LottieLoader::~LottieLoader()
 {
     done();
 
+    closeVideoAssets();
+
     release();
 
     //TODO: correct position?
@@ -107,6 +132,8 @@ bool LottieLoader::header()
     if (TaskScheduler::threads() == 0) {
         Loader::read();
         if (prepare()) {
+            builder->update(comp, 0);
+            build = false;
             w = static_cast<float>(comp->w);
             h = static_cast<float>(comp->h);
             segmentEnd = frameCnt = comp->frameCnt();
@@ -222,6 +249,7 @@ bool LottieLoader::open(const char* data, uint32_t size, const LoaderOps* _ops, 
     this->copy = copy;
     dirName = ops->rpath ? duplicate(ops->rpath) : duplicate(".");
     builder->resolver = ops->resolver;
+    setVideoProvider(ops->lottieVideoProvider);
 
     return header();
 }
@@ -235,6 +263,7 @@ bool LottieLoader::open(const char* path, const LoaderOps* ops)
         dirName = tvg::dirname(path);
         copy = true;
         builder->resolver = static_cast<const PictureOps*>(ops)->resolver;
+        setVideoProvider(static_cast<const PictureOps*>(ops)->lottieVideoProvider);
         return header();
     }
 #endif
@@ -290,6 +319,8 @@ bool LottieLoader::apply(uint32_t slotcode, bool byDefault)
 
     auto applied = false;
 
+    closeVideoAssets();
+
     // Reset all slots if slotcode is 0
     if (slotcode == 0) {
         ARRAY_FOREACH(p, comp->slots) (*p)->reset();
@@ -320,6 +351,7 @@ bool LottieLoader::del(uint32_t slotcode, bool byDefault)
     INLIST_SAFE_FOREACH(this->slots, slot) {
         if (slot->code != slotcode) continue;
         if (!byDefault) {
+            closeVideoAssets();
             ARRAY_FOREACH(p, slot->props) {
                 p->target->reset();
             }
@@ -519,4 +551,67 @@ bool LottieLoader::quality(uint8_t value)
         build = true;
     }
     return true;
+}
+
+
+void LottieLoader::renderer(RenderMethod* renderer)
+{
+    auto flags = renderer ? renderer->nativeSurfaceFlags() : 0;
+    if (builder->videoNativeFlags == flags) return;
+
+    done();
+
+    builder->videoNativeFlags = flags;
+    clearVideoFrames();
+
+    if (comp) {
+        comp->clear();
+        build = true;
+    }
+}
+
+
+Result LottieLoader::setVideoProvider(const LottieVideoProvider* provider)
+{
+    done();
+
+    closeVideoAssets();
+
+    if (provider) {
+        videoProvider = *provider;
+        videoProviderSet = true;
+        builder->videoProvider = &videoProvider;
+    } else {
+        videoProvider = LottieVideoProvider{};
+        videoProviderSet = false;
+        builder->videoProvider = nullptr;
+    }
+
+    build = true;
+    return Result::Success;
+}
+
+
+void LottieLoader::closeVideoAssets()
+{
+    if (!comp) return;
+
+    _clearVideoFrames(comp);
+
+    if (!videoProviderSet) return;
+
+    ARRAY_FOREACH(p, comp->assets) {
+        if ((*p)->type != LottieObject::Image) continue;
+        auto image = static_cast<LottieImage*>(*p);
+        auto opened = image->video.opened;
+        if (opened && videoProvider.close) videoProvider.close(image->video.assetId, videoProvider.data);
+        image->video.opened = false;
+        image->video.openFailed = false;
+    }
+}
+
+
+void LottieLoader::clearVideoFrames()
+{
+    _clearVideoFrames(comp);
 }

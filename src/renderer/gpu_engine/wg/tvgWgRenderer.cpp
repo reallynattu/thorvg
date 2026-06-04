@@ -182,9 +182,14 @@ RenderData WgRenderer::prepare(RenderSurface* surface, RenderData data, const Ma
     auto renderDataPicture = data ? (WgRenderDataPicture*)data : mRenderDataPicturePool.allocate(mContext);
     auto cacheStale = renderDataPicture->imageTexture && (renderDataPicture->imageStamp != mTextures.stamp);
     auto updateGeometry = !data || (flags & (RenderUpdateFlag::Transform | RenderUpdateFlag::Path | RenderUpdateFlag::Image));
-    auto refreshTexture = ((flags & (RenderUpdateFlag::Path | RenderUpdateFlag::Image)) != RenderUpdateFlag::None);
-    auto sourceChanged = (renderDataPicture->imageSource != surface);
+    auto sourceChanged = (renderDataPicture->imageSource != surface) ||
+                         (renderDataPicture->imageNativeType != surface->nativeType) ||
+                         (renderDataPicture->imageNativeHandle != surface->nativeHandle) ||
+                         (renderDataPicture->imageNativeId != surface->nativeId) ||
+                         (renderDataPicture->imageNativeTarget != surface->nativeTarget);
     auto filterChanged = (renderDataPicture->imageFilter != filter);
+    auto serialChanged = (renderDataPicture->imageSerial != surface->serial);
+    auto refreshTexture = ((flags & RenderUpdateFlag::Image) != RenderUpdateFlag::None) && serialChanged;
     auto needsImage = !renderDataPicture->imageTexture || sourceChanged || filterChanged || refreshTexture || cacheStale;
 
     // update paint settings
@@ -201,7 +206,7 @@ RenderData WgRenderer::prepare(RenderSurface* surface, RenderData data, const Ma
     if (needsImage) {
         renderDataPicture->releaseTexture(mTextures, mContext);
         auto* entry = mTextures.retain(mContext, surface, filter, refreshTexture);
-        renderDataPicture->setImage(entry->texture, entry->bindGroup, surface, filter, mTextures.stamp);
+        renderDataPicture->setImage(entry->texture, entry->bindGroup, surface, filter, mTextures.stamp, surface->serial);
     }
 
     if (flags & RenderUpdateFlag::Clip) renderDataPicture->updateClips(clips);

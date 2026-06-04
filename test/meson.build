@@ -26,6 +26,10 @@ test_file = [
     'testText.cpp'
 ]
 
+if get_option('bindings').contains('capi') and lottie_loader
+    test_file += ['testCapi.cpp']
+endif
+
 if gl_engine
     test_egl_dep = dependency('egl', required: false)
 

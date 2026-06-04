@@ -38,10 +38,12 @@ struct PictureImpl : Picture
     Paint* vector = nullptr;          //vector picture uses
     RenderSurface* bitmap = nullptr;  //bitmap picture uses
     AssetResolver* resolver = nullptr;
+    LottieVideoProvider lottieVideoProvider = {};
     Point origin = {};
     float w = 0, h = 0;
     FilterMethod filter = FilterMethod::Bilinear;
     bool resizing = false;
+    bool lottieVideoProviderSet = false;
 
     PictureImpl() : impl(Paint::Impl(this))
     {
@@ -62,6 +64,8 @@ struct PictureImpl : Picture
 
     bool update(RenderMethod* renderer, const Matrix& transform, Array<RenderData>& clips, uint8_t opacity, RenderUpdateFlag flag, TVG_UNUSED bool clipper)
     {
+        if (loader) loader->renderer(renderer);
+
         load();
 
         auto pivot = Point{-origin.x * float(w), -origin.y * float(h)};
@@ -137,7 +141,7 @@ struct PictureImpl : Picture
         if (vector || bitmap) return Result::InsufficientCondition;
 
         bool invalid;  //Invalid Path
-        PictureOps ops = {resolver, nullptr, accessible};
+        PictureOps ops = {resolver, nullptr, accessible, lottieVideoProviderSet ? &lottieVideoProvider : nullptr};
         auto loader = LoaderMgr::loader(filename, &ops, &invalid);
         if (invalid) return Result::InvalidArguments;
         return load(loader);
@@ -148,7 +152,7 @@ struct PictureImpl : Picture
         if (!data || size <= 0) return Result::InvalidArguments;
         if (vector || bitmap) return Result::InsufficientCondition;
 
-        PictureOps ops = {resolver, rpath, accessible};
+        PictureOps ops = {resolver, rpath, accessible, lottieVideoProviderSet ? &lottieVideoProvider : nullptr};
         return load(LoaderMgr::loader(data, size, mimeType, &ops, copy));
     }
 

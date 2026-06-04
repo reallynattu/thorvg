@@ -55,9 +55,40 @@ bool RawLoader::open(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs
     surface.stride = w;
     surface.w = w;
     surface.h = h;
+    surface.serial = 0;
     surface.cs = cs;
     surface.channelSize = sizeof(uint32_t);
     surface.premultiplied = (cs == ColorSpace::ABGR8888 || cs == ColorSpace::ARGB8888) ? true : false;
+    surface.nativeType = RenderSurfaceNativeType::None;
+    surface.nativeHandle = nullptr;
+    surface.nativeId = 0;
+    surface.nativeTarget = 0;
+
+    return true;
+}
+
+
+bool RawLoader::update(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs, uint64_t serial,
+                       RenderSurfaceNativeType nativeType, void* nativeHandle, uintptr_t nativeId, uint32_t nativeTarget)
+{
+    if (copy || w == 0 || h == 0 || cs == ColorSpace::Unknown) return false;
+    if (!data && nativeType == RenderSurfaceNativeType::None) return false;
+
+    this->w = (float)w;
+    this->h = (float)h;
+
+    surface.buf32 = const_cast<uint32_t*>(data);
+    surface.stride = w;
+    surface.w = w;
+    surface.h = h;
+    surface.serial = serial;
+    surface.cs = cs;
+    surface.channelSize = sizeof(uint32_t);
+    surface.premultiplied = (cs == ColorSpace::ABGR8888 || cs == ColorSpace::ARGB8888) ? true : false;
+    surface.nativeType = nativeType;
+    surface.nativeHandle = nativeHandle;
+    surface.nativeId = nativeId;
+    surface.nativeTarget = nativeTarget;
 
     return true;
 }

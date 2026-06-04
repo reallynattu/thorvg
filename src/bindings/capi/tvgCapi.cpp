@@ -22,6 +22,7 @@
 
 #include "config.h"
 #include <string>
+#include <unordered_map>
 #include <thorvg.h>
 #include "thorvg_capi.h"
 #ifdef THORVG_LOTTIE_LOADER_SUPPORT
@@ -30,6 +31,79 @@
 
 using namespace std;
 using namespace tvg;
+
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+struct CapiLottieVideoProvider
+{
+    Tvg_Lottie_Video_Provider provider;
+};
+
+
+static unordered_map<Tvg_Animation, CapiLottieVideoProvider*> _capiLottieVideoProviders;
+
+
+static Tvg_Lottie_Video_Asset_Info _capiVideoAsset(const LottieVideoAssetInfo* asset)
+{
+    return {asset->assetId, asset->src, asset->mime, asset->width, asset->height, asset->duration, asset->frameRate, asset->loop, asset->holdLastFrame, asset->muted};
+}
+
+
+static Result _capiVideoOpen(const LottieVideoAssetInfo* asset, void* data)
+{
+    auto adapter = static_cast<CapiLottieVideoProvider*>(data);
+    if (!adapter->provider.open) return Result::Success;
+
+    auto cAsset = _capiVideoAsset(asset);
+    return static_cast<Result>(adapter->provider.open(&cAsset, adapter->provider.data));
+}
+
+
+static Result _capiVideoFrame(const LottieVideoFrameRequest* request, LottieVideoFrame* out, void* data)
+{
+    auto adapter = static_cast<CapiLottieVideoProvider*>(data);
+
+    auto cAsset = _capiVideoAsset(request->asset);
+    Tvg_Lottie_Video_Frame_Request cRequest = {&cAsset, request->time, request->serialHint, request->flags};
+    Tvg_Lottie_Video_Frame cFrame = {};
+    auto result = adapter->provider.frame(&cRequest, &cFrame, adapter->provider.data);
+
+    out->type = static_cast<LottieVideoFrameType>(cFrame.type);
+    out->data = cFrame.data;
+    out->width = cFrame.width;
+    out->height = cFrame.height;
+    out->colorSpace = static_cast<ColorSpace>(cFrame.colorspace);
+    out->timestamp = cFrame.timestamp;
+    out->duration = cFrame.duration;
+    out->serial = cFrame.serial;
+    out->nativeHandle = cFrame.native_handle;
+    out->nativeId = cFrame.native_id;
+    out->nativeTarget = cFrame.native_target;
+    out->release = cFrame.release;
+    out->user = cFrame.user;
+
+    return static_cast<Result>(result);
+}
+
+
+static void _capiVideoClose(const char* assetId, void* data)
+{
+    auto adapter = static_cast<CapiLottieVideoProvider*>(data);
+    if (adapter->provider.close) adapter->provider.close(assetId, adapter->provider.data);
+}
+
+
+static Tvg_Result _capiLottieVideoProviderClear(Tvg_Animation animation)
+{
+    auto it = _capiLottieVideoProviders.find(animation);
+    if (it == _capiLottieVideoProviders.end()) return TVG_RESULT_SUCCESS;
+
+    auto adapter = it->second;
+    auto result = reinterpret_cast<LottieAnimation*>(animation)->videoProvider(nullptr);
+    _capiLottieVideoProviders.erase(it);
+    delete(adapter);
+    return static_cast<Tvg_Result>(result);
+}
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -1137,6 +1211,9 @@ TVG_API Tvg_Result tvg_animation_get_segment(Tvg_Animation animation, float* sta
 TVG_API Tvg_Result tvg_animation_del(Tvg_Animation animation)
 {
     if (animation) {
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+        _capiLottieVideoProviderClear(animation);
+#endif
         delete(reinterpret_cast<Animation*>(animation));
         return TVG_RESULT_SUCCESS;
     }
@@ -1289,6 +1366,33 @@ TVG_API Tvg_Result tvg_lottie_animation_set_quality(Tvg_Animation animation, uin
 #ifdef THORVG_LOTTIE_LOADER_SUPPORT
     if (animation) return (Tvg_Result) reinterpret_cast<LottieAnimation*>(animation)->quality(value);
     return TVG_RESULT_INVALID_ARGUMENT;
+#endif
+    return TVG_RESULT_NOT_SUPPORTED;
+}
+
+
+TVG_API Tvg_Result tvg_lottie_animation_set_video_provider(Tvg_Animation animation, const Tvg_Lottie_Video_Provider* provider)
+{
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+    if (!animation) return TVG_RESULT_INVALID_ARGUMENT;
+    if (provider && !provider->frame) return TVG_RESULT_INVALID_ARGUMENT;
+
+    auto result = _capiLottieVideoProviderClear(animation);
+    if (result != TVG_RESULT_SUCCESS || !provider) return result;
+
+    auto adapter = new CapiLottieVideoProvider;
+    if (!adapter) return TVG_RESULT_FAILED_ALLOCATION;
+    adapter->provider = *provider;
+
+    LottieVideoProvider cppProvider = {_capiVideoOpen, _capiVideoFrame, _capiVideoClose, adapter};
+    result = (Tvg_Result) reinterpret_cast<LottieAnimation*>(animation)->videoProvider(&cppProvider);
+    if (result != TVG_RESULT_SUCCESS) {
+        delete(adapter);
+        return result;
+    }
+
+    _capiLottieVideoProviders[animation] = adapter;
+    return TVG_RESULT_SUCCESS;
 #endif
     return TVG_RESULT_NOT_SUPPORTED;
 }

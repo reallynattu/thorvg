@@ -33,6 +33,9 @@ public:
 
     using Loader::open;
     bool open(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs, bool copy);
+    bool update(const uint32_t* data, uint32_t w, uint32_t h, ColorSpace cs, uint64_t serial,
+                RenderSurfaceNativeType nativeType = RenderSurfaceNativeType::None,
+                void* nativeHandle = nullptr, uintptr_t nativeId = 0, uint32_t nativeTarget = 0);
     bool read() override;
 };
 

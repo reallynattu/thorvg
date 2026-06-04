@@ -123,6 +123,30 @@ Result LottieAnimation::quality(uint8_t value) noexcept
 }
 
 
+Result LottieAnimation::videoProvider(const LottieVideoProvider* provider) noexcept
+{
+    if (provider && !provider->frame) return Result::InvalidArguments;
+
+    auto picture = to<PictureImpl>(pImpl->picture);
+    auto loader = picture->loader;
+    if (loader && loader->type != FileType::Lot) return Result::NonSupport;
+
+    if (provider) {
+        picture->lottieVideoProvider = *provider;
+        picture->lottieVideoProviderSet = true;
+    } else {
+        picture->lottieVideoProvider = LottieVideoProvider{};
+        picture->lottieVideoProviderSet = false;
+    }
+
+    if (!loader) return Result::Success;
+
+    auto result = static_cast<LottieLoader*>(loader)->setVideoProvider(provider);
+    if (result == Result::Success) PAINT(pImpl->picture)->mark(RenderUpdateFlag::All);
+    return result;
+}
+
+
 LottieAnimation* LottieAnimation::gen() noexcept
 {
     return new LottieAnimation;

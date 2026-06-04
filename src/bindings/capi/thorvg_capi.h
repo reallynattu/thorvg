@@ -145,6 +145,135 @@ typedef enum
 } Tvg_Colorspace;
 
 /**
+ * @brief Enumeration specifying the type of frame returned by a Lottie video provider.
+ *
+ * @note Experimental API
+ */
+typedef enum
+{
+    TVG_LOTTIE_VIDEO_FRAME_TYPE_NONE = 0,  ///< No frame is available yet; ThorVG may reuse the previous frame or poster fallback.
+    TVG_LOTTIE_VIDEO_FRAME_TYPE_BITMAP,    ///< A CPU bitmap frame is available.
+    TVG_LOTTIE_VIDEO_FRAME_TYPE_GL_TEXTURE,    ///< An OpenGL texture handle is available, with bitmap fallback when requested.
+    TVG_LOTTIE_VIDEO_FRAME_TYPE_WG_TEXTURE,    ///< A WebGPU texture handle is available, with bitmap fallback when requested.
+    TVG_LOTTIE_VIDEO_FRAME_TYPE_NATIVE_HANDLE  ///< A platform-native frame handle is available. Reserved for future backend-native import.
+} Tvg_Lottie_Video_Frame_Type;
+
+/**
+ * @brief Bit flags describing constraints for a Lottie video frame request.
+ *
+ * @note Experimental API
+ */
+typedef enum
+{
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_NONE = 0,              ///< No request flags are set.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_BITMAP_REQUIRED = 1,   ///< ThorVG needs a CPU bitmap or bitmap fallback for this request.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_MASK = 1 << 1,         ///< The video layer has masks.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_MATTE = 1 << 2,        ///< The video layer is used by or composed with a track matte.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_EFFECT = 1 << 3,       ///< The video layer has effects.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_BLEND = 1 << 4,        ///< The video layer uses a non-normal blend mode.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_GL_TEXTURE = 1 << 5,   ///< ThorVG can consume @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_GL_TEXTURE for this request.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_WG_TEXTURE = 1 << 6,   ///< ThorVG can consume @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_WG_TEXTURE for this request.
+    TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_NATIVE_HANDLE = 1 << 7 ///< ThorVG can consume @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_NATIVE_HANDLE for this request.
+} Tvg_Lottie_Video_Frame_Request_Flag;
+
+/**
+ * @brief Describes a video asset found in a Lottie image asset extension.
+ *
+ * @note Experimental API
+ */
+typedef struct
+{
+    const char* asset_id;       ///< The Lottie asset id.
+    const char* src;            ///< The video source path or URI.
+    const char* mime;           ///< The video MIME type, if specified.
+    float width;                ///< The asset width in pixels.
+    float height;               ///< The asset height in pixels.
+    float duration;             ///< The video duration in seconds.
+    float frame_rate;           ///< The video frame rate, if specified.
+    bool loop;                  ///< Whether the video should loop.
+    bool hold_last_frame;       ///< Whether a non-looping video should hold the last frame.
+    bool muted;                 ///< Whether the video asset is expected to be muted.
+} Tvg_Lottie_Video_Asset_Info;
+
+/**
+ * @brief Describes the frame requested from a Lottie video provider.
+ *
+ * @note Experimental API
+ */
+typedef struct
+{
+    const Tvg_Lottie_Video_Asset_Info* asset;  ///< The video asset metadata.
+    double time;                               ///< Requested media time in seconds.
+    uint64_t serial_hint;                      ///< Last accepted frame serial for this layer.
+    uint32_t flags;                            ///< Bitwise combination of @ref Tvg_Lottie_Video_Frame_Request_Flag values.
+} Tvg_Lottie_Video_Frame_Request;
+
+/**
+ * @brief Describes a decoded Lottie video frame returned by a provider.
+ *
+ * For @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_BITMAP, @c data must point to tightly
+ * packed 32-bit pixels with @c width pixels per row and @c colorspace must be
+ * @ref TVG_COLORSPACE_ABGR8888, @ref TVG_COLORSPACE_ARGB8888,
+ * @ref TVG_COLORSPACE_ABGR8888S, or @ref TVG_COLORSPACE_ARGB8888S. The color
+ * space declares both channel order and whether alpha is premultiplied or
+ * straight. ThorVG copies bitmap pixels before returning from the frame
+ * callback in this initial API.
+ * For @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_GL_TEXTURE, @c native_id is the GL
+ * texture id and @c native_target must be GL_TEXTURE_2D. For
+ * @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_WG_TEXTURE, @c native_handle is a
+ * WGPUTexture. Native frames must still set @c width, @c height, and
+ * @c colorspace. Providers may also set @c data on native frames to provide a
+ * portable bitmap fallback. If
+ * @ref TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_BITMAP_REQUIRED is set in the
+ * request flags, ThorVG needs a bitmap frame or bitmap fallback for correct
+ * rendering, even when a native support flag is also present. Native-only
+ * frames should be returned only when the corresponding native support flag is
+ * set and @ref TVG_LOTTIE_VIDEO_FRAME_REQUEST_FLAG_BITMAP_REQUIRED is not set.
+ * @c timestamp and @c duration describe the provider-selected media frame and
+ * are informational in this initial API; ThorVG uses the request time and
+ * @c serial for frame acquisition and cache invalidation.
+ *
+ * @note Experimental API
+ */
+typedef struct
+{
+    Tvg_Lottie_Video_Frame_Type type;  ///< The returned frame type.
+    const uint32_t* data;              ///< Bitmap pixel data for Bitmap frames, or a bitmap fallback for native frames.
+    uint32_t width;                    ///< Bitmap width in pixels.
+    uint32_t height;                   ///< Bitmap height in pixels.
+    Tvg_Colorspace colorspace;         ///< Bitmap color space.
+    double timestamp;                  ///< Returned frame timestamp in seconds. Informational in this initial API.
+    double duration;                   ///< Returned frame duration in seconds. Informational in this initial API.
+    uint64_t serial;                   ///< Provider-defined content revision.
+    void* native_handle;               ///< Backend-native object handle, such as a WGPUTexture.
+    uintptr_t native_id;               ///< Backend-native integer handle, such as a GL texture id.
+    uint32_t native_target;            ///< Backend-specific handle target or usage value.
+    void (*release)(void* user);       ///< Optional release callback for provider-owned frame data.
+    void* user;                        ///< Provider-owned release data.
+} Tvg_Lottie_Video_Frame;
+
+/**
+ * @brief Callback table for providing decoded frames for Lottie video assets.
+ *
+ * ThorVG remains a compositor: the provider owns decoding, seeking, buffering,
+ * and frame lifetime. Returning @ref TVG_RESULT_SUCCESS with
+ * @ref TVG_LOTTIE_VIDEO_FRAME_TYPE_NONE or returning
+ * @ref TVG_RESULT_INSUFFICIENT_CONDITION means no new frame is available.
+ * Callbacks may run on ThorVG's Lottie update task thread. Providers should keep
+ * callbacks bounded and thread-safe, and should return a pending/no-frame result
+ * instead of blocking on decode.
+ *
+ * @note Experimental API
+ */
+typedef struct
+{
+    Tvg_Result (*open)(const Tvg_Lottie_Video_Asset_Info* asset, void* data);                      ///< Called once before frames are requested.
+    Tvg_Result (*frame)(const Tvg_Lottie_Video_Frame_Request* request, Tvg_Lottie_Video_Frame* out, void* data);  ///< Requests a decoded frame.
+    void (*close)(const char* asset_id, void* data);                                              ///< Called when an opened asset is released.
+    void* data;                                                                                   ///< User data passed to callbacks.
+} Tvg_Lottie_Video_Provider;
+
+/**
  * @brief Enumeration to specify rendering engine behavior.
  *
  * @note The availability or behavior of @c TVG_ENGINE_OPTION_SMART_RENDER may vary depending on platform or backend support.
@@ -3155,6 +3284,28 @@ TVG_API Tvg_Result tvg_lottie_animation_tween(Tvg_Animation animation, float fro
  * @since 1.0
  */
 TVG_API Tvg_Result tvg_lottie_animation_set_quality(Tvg_Animation animation, uint8_t value);
+
+/**
+ * @brief Sets the provider used to render video-capable Lottie image assets.
+ *
+ * The provider is called when an image asset contains an @c x-video extension.
+ * ThorVG does not decode media files; it asks this provider for decoded frames
+ * that match the current Lottie timeline. Bitmap frames are consumed by the
+ * portable rendering path; GL/WebGPU texture frames may be sampled by matching
+ * backends when the frame request advertises that native texture type.
+ * Provider callbacks may run on ThorVG's Lottie update task thread, so they
+ * should be bounded and thread-safe.
+ *
+ * @param[in] animation The Lottie animation object.
+ * @param[in] provider The provider callback table. Pass @c NULL to unset it.
+ *
+ * @retval TVG_RESULT_INVALID_ARGUMENT In case @p animation is @c NULL or @p provider has no frame callback.
+ * @retval TVG_RESULT_NOT_SUPPORTED The Lottie Animation is not supported.
+ *
+ * @note Set the provider before loading a Lottie picture so the initial frame can use it.
+ * @note Experimental API
+ */
+TVG_API Tvg_Result tvg_lottie_animation_set_video_provider(Tvg_Animation animation, const Tvg_Lottie_Video_Provider* provider);
 
 /** \} */   // end addtogroup ThorVGCapi_LottieAnimation
 

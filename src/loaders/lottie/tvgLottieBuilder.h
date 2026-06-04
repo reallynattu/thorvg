@@ -179,6 +179,8 @@ struct LottieBuilder
     void build(LottieComposition* comp);
 
     const AssetResolver* resolver = nullptr;  //do not free this
+    const LottieVideoProvider* videoProvider = nullptr;  //do not free this
+    uint32_t videoNativeFlags = 0;
 
 private:
     void appendRect(LottieRect* rect, Shape* shape, Point& pos, Point& size, float r, bool clockwise, RenderContext* ctx);
@@ -193,7 +195,7 @@ private:
     void updatePrecomp(LottieComposition* comp, LottieLayer* precomp, float frameNo);
     void updatePrecomp(LottieComposition* comp, LottieLayer* precomp, float frameNo, Tween& tween);
     void updateSolid(LottieLayer* layer);
-    void updateImage(LottieGroup* layer);
+    void updateImage(LottieComposition* comp, LottieGroup* layer, float frameNo);
     void updateURLFont(LottieLayer* layer, float frameNo, LottieText* text, const TextDocument& doc);
     void updateLocalFont(LottieLayer* layer, float frameNo, LottieText* text, const TextDocument& doc);
     bool updateTextRange(LottieText* text, float frameNo, Shape* shape, const TextDocument& doc, RenderText& ctx);

@@ -130,6 +130,10 @@ struct GlShape
   GLuint texId = 0;
   const RenderSurface* texSource = nullptr;
   FilterMethod texFilter = FilterMethod::Bilinear;
+  uint64_t texSerial = 0;
+  RenderSurfaceNativeType texNativeType = RenderSurfaceNativeType::None;
+  uintptr_t texNativeId = 0;
+  uint32_t texNativeTarget = 0;
   uint32_t texFlipY = 0;
   ColorSpace texColorSpace = ColorSpace::ABGR8888;
   GlGeometry geometry;

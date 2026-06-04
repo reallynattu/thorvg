@@ -24,9 +24,11 @@
 #define _TVG_LOTTIE_MODEL_H_
 
 #include "tvgCommon.h"
+#include "tvgArray.h"
 #include "tvgStr.h"
 #include "tvgCompressor.h"
 #include "tvgInlist.h"
+#include "tvgPaint.h"
 #include "tvgRender.h"
 #include "tvgLottieProperty.h"
 #include "tvgLottieRenderPooler.h"
@@ -940,9 +942,129 @@ struct LottieGradientStroke : LottieGradient, LottieStroke
 };
 
 
+struct LottieVideo
+{
+    ~LottieVideo()
+    {
+        release();
+    }
+
+    void release()
+    {
+        clearFrame();
+        trackedPictures.reset();
+        tvg::free(assetId);
+        tvg::free(src);
+        tvg::free(mime);
+        assetId = nullptr;
+        src = nullptr;
+        mime = nullptr;
+        opened = false;
+        openFailed = false;
+    }
+
+    void clearFrame()
+    {
+        releasePictureRenderData();
+        releaseFrame();
+        if (picture) {
+            picture->unref();
+            picture = nullptr;
+        }
+        releaseTrackedPictures();
+        tvg::free(pixels);
+        pixels = nullptr;
+        pixelsCapacity = 0;
+        frameWidth = 0;
+        frameHeight = 0;
+        providerSerial = 0;
+        surfaceSerial = 0;
+        colorSpace = ColorSpace::Unknown;
+    }
+
+    void releaseFrame()
+    {
+        if (frameRelease) frameRelease(frameUser);
+        frameRelease = nullptr;
+        frameUser = nullptr;
+        frameNative = false;
+    }
+
+    void trackPicture(Picture* picture)
+    {
+        if (!picture) return;
+        picture->ref();
+        trackedPictures.push(picture);
+    }
+
+    void releasePictureRenderData()
+    {
+        if (!frameNative) return;
+        disposePictureRenderData(picture);
+        for (uint32_t i = 0; i < trackedPictures.count; ++i) {
+            disposePictureRenderData(trackedPictures[i]);
+        }
+    }
+
+    void releaseTrackedPictures()
+    {
+        for (uint32_t i = 0; i < trackedPictures.count; ++i) {
+            trackedPictures[i]->unref();
+        }
+        trackedPictures.clear();
+    }
+
+    bool valid() const
+    {
+        return src != nullptr;
+    }
+
+    LottieVideoAssetInfo info() const
+    {
+        return {assetId, src, mime, width, height, duration, frameRate, loop, holdLastFrame, muted};
+    }
+
+    char* assetId = nullptr;
+    char* src = nullptr;
+    char* mime = nullptr;
+    Picture* picture = nullptr;
+    Array<Picture*> trackedPictures;
+    uint32_t* pixels = nullptr;
+    uint32_t pixelsCapacity = 0;
+    float width = 0.0f;
+    float height = 0.0f;
+    float duration = 0.0f;
+    float frameRate = 0.0f;
+    uint32_t frameWidth = 0;
+    uint32_t frameHeight = 0;
+    bool loop = false;
+    bool holdLastFrame = true;
+    bool muted = true;
+    bool opened = false;
+    bool openFailed = false;
+    uint64_t providerSerial = 0;
+    uint64_t surfaceSerial = 0;
+    ColorSpace colorSpace = ColorSpace::Unknown;
+    void (*frameRelease)(void* user) = nullptr;
+    void* frameUser = nullptr;
+    bool frameNative = false;
+
+private:
+    static void disposePictureRenderData(Picture* picture)
+    {
+        if (!picture || !picture->pImpl) return;
+        if (picture->pImpl->renderer && picture->pImpl->rd) {
+            picture->pImpl->renderer->dispose(picture->pImpl->rd);
+            picture->pImpl->rd = nullptr;
+        }
+    }
+};
+
+
 struct LottieImage : LottieObject
 {
     LottieBitmap bitmap;
+    LottieVideo video;
     bool resolved = false;
 
     LottieProperty* override(LottieProperty* prop, bool release) override
@@ -950,11 +1072,14 @@ struct LottieImage : LottieObject
         LottieProperty* backup = nullptr;
         if (release) bitmap.release();
         else backup = new LottieBitmap(bitmap);
-        bitmap.copy(*static_cast<LottieBitmap*>(prop), false);
+        auto image = static_cast<LottieBitmap*>(prop);
+        bitmap.copy(*image, false);
+        videoOverridden = video.valid() && !image->video;
         return backup;
     }
 
     void prepare(bool external);
+    bool videoOverridden = false;
 };
 
 
@@ -1073,6 +1198,7 @@ struct LottieLayer : LottieGroup
     Array<LottieMask*> masks;
     Array<LottieEffect*> effects;
     LottieLayer* matteTarget = nullptr;
+    LottieVideo video;          //per-layer decoded video frame cache
 
     LottieRenderPooler<tvg::Shape> statical;  //static pooler for solid fill and clipper
 

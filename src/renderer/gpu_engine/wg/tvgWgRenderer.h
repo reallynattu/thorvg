@@ -30,6 +30,7 @@ struct WgRenderer : RenderMethod
 {
     //main features
     bool preUpdate() override;
+    uint32_t nativeSurfaceFlags() override { return static_cast<uint32_t>(RenderSurfaceNativeFlag::WgTexture); }
     RenderData prepare(const RenderShape& rshape, RenderData data, const Matrix& transform, const Array<RenderData>& clips, uint8_t opacity, RenderUpdateFlag flags, bool clipper) override;
     RenderData prepare(RenderSurface* surface, RenderData data, const Matrix& transform, const Array<RenderData>& clips, uint8_t opacity, FilterMethod filter, RenderUpdateFlag flags) override;
     bool postUpdate() override;

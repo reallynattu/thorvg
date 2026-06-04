@@ -22,6 +22,12 @@
 
 #include "tvgWgTextureMgr.h"
 
+static WGPUTexture _nativeWgTexture(const RenderSurface* surface)
+{
+    if (surface->nativeType != RenderSurfaceNativeType::WgTexture) return nullptr;
+    return static_cast<WGPUTexture>(surface->nativeHandle);
+}
+
 static tvg::Inlist<WgTextureEntry>& _entries(WgTextureMgr::SurfaceEntry& surfaceEntry, FilterMethod filter)
 {
     return (filter == FilterMethod::Bilinear) ? surfaceEntry.bilinear : surfaceEntry.nearest;
@@ -34,11 +40,6 @@ static WgTextureEntry* _findEntry(tvg::Inlist<WgTextureEntry>& entries, WGPUText
         if (entry->texture == texture) return entry;
     }
     return nullptr;
-}
-
-static bool _matches(const WgTextureEntry& entry, const RenderSurface* surface, WGPUTextureFormat format)
-{
-    return entry.texture && (wgpuTextureGetWidth(entry.texture) == surface->w) && (wgpuTextureGetHeight(entry.texture) == surface->h) && (wgpuTextureGetFormat(entry.texture) == format);
 }
 
 WgTextureMgr::SurfaceEntry* WgTextureMgr::find(const RenderSurface* surface)
@@ -69,14 +70,34 @@ void WgTextureMgr::upload(WgContext& context, WgTextureEntry& entry, const Rende
     context.layouts.releaseBindGroup(entry.bindGroup);
     auto sampler = (filter == FilterMethod::Bilinear) ? context.samplerLinearClamp : context.samplerNearestClamp;
     entry.bindGroup = context.layouts.createBindGroupTexSampled(sampler, entry.textureView);
+    entry.serial = surface->serial;
+    entry.external = false;
+}
+
+static void _retainExternal(WgContext& context, WgTextureEntry& entry, WGPUTexture texture, FilterMethod filter, uint64_t serial)
+{
+    context.layouts.releaseBindGroup(entry.bindGroup);
+    context.releaseTextureView(entry.textureView);
+    if (entry.texture && !entry.external) context.releaseTexture(entry.texture);
+
+    entry.texture = texture;
+    entry.textureView = context.createTextureView(entry.texture);
+
+    auto sampler = (filter == FilterMethod::Bilinear) ? context.samplerLinearClamp : context.samplerNearestClamp;
+    entry.bindGroup = context.layouts.createBindGroupTexSampled(sampler, entry.textureView);
+    entry.serial = serial;
+    entry.external = true;
 }
 
 void WgTextureMgr::releaseEntry(WgContext& context, WgTextureEntry& entry)
 {
     context.layouts.releaseBindGroup(entry.bindGroup);
     context.releaseTextureView(entry.textureView);
-    context.releaseTexture(entry.texture);
+    if (!entry.external) context.releaseTexture(entry.texture);
+    else entry.texture = nullptr;
     entry.refCnt = 0;
+    entry.serial = 0;
+    entry.external = false;
 }
 
 const WgTextureEntry* WgTextureMgr::retain(WgContext& context, const RenderSurface* surface, FilterMethod filter, bool refreshTexture)
@@ -90,15 +111,37 @@ const WgTextureEntry* WgTextureMgr::retain(WgContext& context, const RenderSurfa
 
     auto& entries = _entries(*surfaceEntry, filter);
     auto* entry = entries.tail;
-    auto format = textureFormat(surface);
-    if (entry && refreshTexture && !_matches(*entry, surface, format) && entry->refCnt > 0) {
+    auto nativeTexture = _nativeWgTexture(surface);
+    if (nativeTexture) {
+        if (entry && (!entry->external || entry->texture != nativeTexture) && entry->refCnt > 0) {
+            entry = new WgTextureEntry;
+            entries.back(entry);
+        } else if (!entry) {
+            entry = new WgTextureEntry;
+            entries.back(entry);
+        }
+        if (!entry->texture || entry->texture != nativeTexture || !entry->external) _retainExternal(context, *entry, nativeTexture, filter, surface->serial);
+        else entry->serial = surface->serial;
+        ++entry->refCnt;
+        return entry;
+    } else if (entry && entry->external) {
+        if (entry->refCnt > 0) {
+            entry = new WgTextureEntry;
+            entries.back(entry);
+        } else {
+            releaseEntry(context, *entry);
+        }
+    }
+
+    auto serialChanged = entry && (entry->serial != surface->serial);
+    if (entry && (refreshTexture || serialChanged) && entry->refCnt > 0) {
         entry = new WgTextureEntry;
         entries.back(entry);
     } else if (!entry) {
         entry = new WgTextureEntry;
         entries.back(entry);
     }
-    if (!entry->texture || refreshTexture) upload(context, *entry, surface, filter);
+    if (!entry->texture || entry->serial != surface->serial) upload(context, *entry, surface, filter);
 
     ++entry->refCnt;
     return entry;

@@ -323,13 +323,18 @@ void WgRenderDataPicture::updateSurface(const RenderSurface* surface, const Matr
     meshData.imageBox(surface->w, surface->h, transform);
 }
 
-void WgRenderDataPicture::setImage(WGPUTexture texture, WGPUBindGroup bindGroup, const RenderSurface* surface, FilterMethod filter, uint16_t stamp)
+void WgRenderDataPicture::setImage(WGPUTexture texture, WGPUBindGroup bindGroup, const RenderSurface* surface, FilterMethod filter, uint16_t stamp, uint64_t serial)
 {
     imageTexture = texture;
     imageBindGroup = bindGroup;
     imageSource = texture ? surface : nullptr;
     imageFilter = filter;
     imageStamp = texture ? stamp : 0;
+    imageSerial = texture ? serial : 0;
+    imageNativeType = texture ? surface->nativeType : RenderSurfaceNativeType::None;
+    imageNativeHandle = texture ? surface->nativeHandle : nullptr;
+    imageNativeId = texture ? surface->nativeId : 0;
+    imageNativeTarget = texture ? surface->nativeTarget : 0;
 }
 
 void WgRenderDataPicture::releaseTexture(WgTextureMgr& textures, WgContext& context)
@@ -345,6 +350,11 @@ void WgRenderDataPicture::clearImage()
     imageSource = nullptr;
     imageFilter = FilterMethod::Bilinear;
     imageStamp = 0;
+    imageSerial = 0;
+    imageNativeType = RenderSurfaceNativeType::None;
+    imageNativeHandle = nullptr;
+    imageNativeId = 0;
+    imageNativeTarget = 0;
 }
 
 void WgRenderDataPicture::release(WgContext& context)

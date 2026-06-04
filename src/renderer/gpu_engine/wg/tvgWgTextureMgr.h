@@ -33,6 +33,8 @@ struct WgTextureEntry
     WGPUTextureView textureView{};
     WGPUBindGroup bindGroup{};
     uint32_t refCnt = 0;
+    uint64_t serial = 0;
+    bool external = false;
 };
 
 struct WgTextureMgr

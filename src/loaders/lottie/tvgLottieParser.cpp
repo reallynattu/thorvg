@@ -1015,12 +1015,84 @@ void LottieParser::parseImage(LottieImage* image, const char* data, const char* 
 }
 
 
+static bool _isVideoSrcUri(const char* src)
+{
+    if (!src) return false;
+    auto c = *src++;
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return false;
+
+    while (*src) {
+        c = *src++;
+        if (c == ':') return true;
+        if (c == '/' || c == '\\') return false;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.') continue;
+        return false;
+    }
+    return false;
+}
+
+
+void LottieParser::parseVideo(LottieVideo& video)
+{
+    if (peekType() != kObjectType) {
+        skip();
+        return;
+    }
+
+    enterObject();
+
+    while (auto key = nextObjectKey()) {
+        if (KEY_AS("src")) {
+            if (peekType() != kStringType) {
+                skip();
+                continue;
+            }
+            auto src = getString();
+            if (!src) continue;
+            if (src[0] == '\0') continue;
+            tvg::free(video.src);
+            video.src = nullptr;
+            if (_isVideoSrcUri(src) || src[0] == '/') {
+                video.src = duplicate(src);
+            } else {
+                auto len = strlen(dirName) + strlen(src) + 2;
+                video.src = tvg::malloc<char>(len);
+                if (video.src) snprintf(video.src, len, "%s/%s", dirName, src);
+            }
+        } else if (KEY_AS("mime")) {
+            if (peekType() == kStringType) video.mime = getStringCopy();
+            else skip();
+        } else if (KEY_AS("duration")) {
+            if (peekType() == kNumberType) video.duration = getFloat();
+            else skip();
+        } else if (KEY_AS("frameRate")) {
+            if (peekType() == kNumberType) video.frameRate = getFloat();
+            else skip();
+        } else if (KEY_AS("loop")) {
+            if (peekType() == kTrueType || peekType() == kFalseType) video.loop = getBool();
+            else if (peekType() == kNumberType) video.loop = getInt();
+            else skip();
+        } else if (KEY_AS("holdLastFrame")) {
+            if (peekType() == kTrueType || peekType() == kFalseType) video.holdLastFrame = getBool();
+            else if (peekType() == kNumberType) video.holdLastFrame = getInt();
+            else skip();
+        } else if (KEY_AS("muted")) {
+            if (peekType() == kTrueType || peekType() == kFalseType) video.muted = getBool();
+            else if (peekType() == kNumberType) video.muted = getInt();
+            else skip();
+        } else skip();
+    }
+}
+
+
 LottieObject* LottieParser::parseAsset()
 {
     enterObject();
 
     LottieObject* obj = nullptr;
     unsigned long id = 0;
+    char* assetId = nullptr;
 
     //Used for Image Asset
     const char* sid = nullptr;
@@ -1029,14 +1101,21 @@ LottieObject* LottieParser::parseAsset()
     float width = 0.0f;
     float height = 0.0f;
     auto embedded = false;
+    LottieVideo video;
 
     while (auto key = nextObjectKey()) {
         if (KEY_AS("id"))
         {
             if (peekType() == kStringType) {
-                id = djb2Encode(getString());
+                auto value = getString();
+                id = djb2Encode(value);
+                assetId = duplicate(value);
             } else {
-                id = _int2str(getInt());
+                auto value = getInt();
+                id = _int2str(value);
+                char buf[20];
+                snprintf(buf, sizeof(buf), "%d", value);
+                assetId = duplicate(buf);
             }
         }
         else if (KEY_AS("layers")) obj = parseLayers(comp->root);
@@ -1046,13 +1125,33 @@ LottieObject* LottieParser::parseAsset()
         else if (KEY_AS("h")) height = getFloat();
         else if (KEY_AS("e")) embedded = getInt();
         else if (KEY_AS("sid")) sid = getString();
+        else if (KEY_AS("x-video")) parseVideo(video);
         else skip();
     }
     if (data) {
-        obj = new LottieImage;
-        parseImage(static_cast<LottieImage*>(obj), data, subPath, embedded, width, height);
-        if (sid) registerSlot(obj, sid, static_cast<LottieImage*>(obj)->bitmap);
+        auto image = new LottieImage;
+        obj = image;
+        parseImage(image, data, subPath, embedded, width, height);
+        if (video.valid()) {
+            image->bitmap.video = true;
+            image->video.assetId = assetId;
+            image->video.src = video.src;
+            image->video.mime = video.mime;
+            image->video.width = width;
+            image->video.height = height;
+            image->video.duration = video.duration;
+            image->video.frameRate = video.frameRate;
+            image->video.loop = video.loop;
+            image->video.holdLastFrame = video.holdLastFrame;
+            image->video.muted = video.muted;
+            assetId = nullptr;
+            video.assetId = nullptr;
+            video.src = nullptr;
+            video.mime = nullptr;
+        }
+        if (sid) registerSlot(obj, sid, image->bitmap);
     }
+    tvg::free(assetId);
     if (obj) obj->id = id;
     return obj;
 }
@@ -1710,6 +1809,10 @@ LottieProperty* LottieParser::parse(LottieSlot* slot)
             }
             if (!obj) return nullptr;
             prop = new LottieBitmap(static_cast<LottieImage*>(obj)->bitmap);
+            // Slot image properties do not carry the parsed LottieVideo metadata.
+            // Treat them as static replacements until video slot overrides have
+            // a full metadata/lifecycle contract.
+            static_cast<LottieBitmap*>(prop)->video = false;
             delete(obj);
             break;
         }

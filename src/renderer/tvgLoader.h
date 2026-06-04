@@ -48,9 +48,10 @@ struct PictureOps : LoaderOps
     AssetResolver* resolver;
     const char* rpath;  // decide the relative path file if the file is loaded from memory
     bool accessible;    // allow the accessor
+    const LottieVideoProvider* lottieVideoProvider;
 
-    PictureOps(AssetResolver* resolver, const char* rpath, bool accessible) :
-        LoaderOps{Type::Picture}, resolver(resolver), rpath(rpath), accessible(accessible) {}
+    PictureOps(AssetResolver* resolver, const char* rpath, bool accessible, const LottieVideoProvider* lottieVideoProvider = nullptr) :
+        LoaderOps{Type::Picture}, resolver(resolver), rpath(rpath), accessible(accessible), lottieVideoProvider(lottieVideoProvider) {}
 };
 
 struct Loader
@@ -88,6 +89,7 @@ struct Loader
     virtual bool open(const char* path, const LoaderOps* ops) { return false; }
     virtual bool open(const char* data, uint32_t size, const LoaderOps* ops, bool copy) { return false; }
     virtual bool resize(Paint* paint, float w, float h) { return false; }
+    virtual void renderer(RenderMethod* renderer) {}
     virtual void sync() {};  // finish immediately if any async update jobs.
 
     virtual bool read()
@@ -147,7 +149,7 @@ struct ImageLoader : Loader
 
     virtual RenderSurface* bitmap()
     {
-        if (surface.data) return &surface;
+        if (surface.data || surface.nativeType != RenderSurfaceNativeType::None) return &surface;
         return nullptr;
     }
 };

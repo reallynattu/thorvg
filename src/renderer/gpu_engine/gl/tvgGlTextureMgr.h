@@ -29,21 +29,25 @@
 struct TextureMgr
 {
     GLuint retain(const RenderSurface* surface, FilterMethod filter);
+    bool update(const RenderSurface* surface, FilterMethod filter, GLuint texId);
     GLuint release(const RenderSurface* surface, FilterMethod filter, GLuint texId);
     void clear();
 
     struct Entry
     {
+        INLIST_ITEM(Entry);
         GLuint texId = 0;
         uint32_t refCnt = 0;
+        uint64_t serial = 0;
+        bool external = false;
     };
 
     struct SurfaceEntry
     {
         INLIST_ITEM(SurfaceEntry);
         const RenderSurface* surface = nullptr;
-        Entry bilinear;
-        Entry nearest;
+        tvg::Inlist<Entry> bilinear;
+        tvg::Inlist<Entry> nearest;
     };
 
     SurfaceEntry* find(const RenderSurface* surface);

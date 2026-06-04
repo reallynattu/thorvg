@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ThorVG WASM Lottie Video Layer Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0b1020;
+        color: #e5edf7;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 20% 10%, rgba(45, 245, 255, 0.16), transparent 28rem),
+          linear-gradient(135deg, #080b14 0%, #121a2c 100%);
+      }
+      main {
+        width: min(1320px, calc(100vw - 32px));
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: clamp(24px, 4vw, 42px);
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+      h2 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0;
+      }
+      p {
+        max-width: 720px;
+        margin: 0 0 18px;
+        color: #aebbd0;
+        line-height: 1.55;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 960px) minmax(260px, 320px);
+        gap: 24px;
+        align-items: start;
+      }
+      .workspace {
+        min-width: 0;
+      }
+      .stage {
+        display: grid;
+        gap: 14px;
+      }
+      .variant-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 18px;
+      }
+      .variant-button {
+        min-height: 34px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: rgba(15, 23, 42, 0.72);
+        color: #dbe7f5;
+        padding: 7px 11px;
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .variant-button:hover {
+        border-color: rgba(114, 240, 194, 0.6);
+      }
+      .variant-button[aria-pressed="true"] {
+        border-color: rgba(114, 240, 194, 0.85);
+        background: rgba(20, 83, 72, 0.6);
+        color: #c7ffee;
+      }
+      canvas {
+        width: min(100%, 960px);
+        aspect-ratio: 16 / 9;
+        image-rendering: auto;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: #05070d;
+        box-shadow: 0 20px 80px rgba(0, 0, 0, 0.42);
+      }
+      .hud {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        color: #c8d6ea;
+        font-size: 14px;
+      }
+      .pill {
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(15, 23, 42, 0.78);
+        padding: 7px 10px;
+      }
+      .summary {
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: rgba(15, 23, 42, 0.58);
+        padding: 16px;
+      }
+      .summary p {
+        margin: 8px 0 14px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .summary-list {
+        display: grid;
+        gap: 11px;
+        margin: 0;
+      }
+      .summary-row {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        border-top: 1px solid rgba(148, 163, 184, 0.18);
+        padding-top: 11px;
+        color: #c8d6ea;
+        font-size: 13px;
+        line-height: 1.42;
+      }
+      .summary-row dt {
+        color: #72f0c2;
+        font-weight: 700;
+      }
+      .summary-row dd {
+        margin: 0;
+      }
+      .ok {
+        color: #72f0c2;
+      }
+      .bad {
+        color: #ff9c9c;
+      }
+      @media (max-width: 1120px) {
+        body {
+          align-items: start;
+          padding: 20px 0;
+        }
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        .summary {
+          max-width: 960px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="layout">
+        <div class="workspace">
+          <h1>ThorVG WASM video layer</h1>
+          <p>
+            This page loads the local ThorVG WebAssembly bundle, renders a Lottie
+            <code>x-video</code> image layer, and paints ThorVG's software buffer
+            into this browser canvas.
+          </p>
+          <div class="variant-bar" id="variants" aria-label="Video variants"></div>
+          <div class="stage">
+            <canvas id="view" width="320" height="180"></canvas>
+            <div class="hud">
+              <span class="pill" id="status">Loading WASM...</span>
+              <span class="pill" id="variant">variant: loading</span>
+              <span class="pill" id="lottie-size">lottie JSON: --</span>
+              <span class="pill" id="frames">frames: 0</span>
+              <span class="pill" id="fps">browser fps: --</span>
+              <span class="pill" id="provider">provider: opened 0 / framed 0 / closed 0</span>
+            </div>
+          </div>
+        </div>
+        <aside class="summary" aria-label="Approach summary">
+          <h2>Video Approach</h2>
+          <p>
+            The Lottie stays vector-native while ThorVG receives decoded video
+            frames through its provider hook.
+          </p>
+          <dl class="summary-list">
+            <div class="summary-row">
+              <dt>Lottie</dt>
+              <dd>The JSON defines a normal image layer whose asset carries <code>x-video</code> MP4 metadata.</dd>
+            </div>
+            <div class="summary-row">
+              <dt>ThorVG</dt>
+              <dd><code>LottieVideoProvider</code> opens that asset and asks for a bitmap at the current animation time.</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Browser</dt>
+              <dd>A hidden <code>video</code> element decodes the MP4; a hidden canvas copies RGBA pixels into WASM memory.</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Composite</dt>
+              <dd>ThorVG treats the supplied bitmap like the image layer, so transforms, masks, and crops stay in Lottie.</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Output</dt>
+              <dd>ThorVG renders the full 1280x720 software buffer, then JavaScript blits it to the visible canvas.</dd>
+            </div>
+          </dl>
+        </aside>
+      </div>
+    </main>
+    <script type="module">
+      import createThorvgVideoDemo from "./thorvg-video-demo.js?v=stats-summary";
+
+      const canvas = document.getElementById("view");
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      const statusEl = document.getElementById("status");
+      const variantEl = document.getElementById("variant");
+      const lottieSizeEl = document.getElementById("lottie-size");
+      const framesEl = document.getElementById("frames");
+      const fpsEl = document.getElementById("fps");
+      const providerEl = document.getElementById("provider");
+      const variantsEl = document.getElementById("variants");
+
+      const Module = await createThorvgVideoDemo({
+        locateFile(path) {
+          return path;
+        }
+      });
+
+      const init = Module._demo_init();
+      if (init !== 0) {
+        statusEl.textContent = `init failed: ${init}`;
+        statusEl.className = "pill bad";
+        throw new Error(`demo_init failed: ${init}`);
+      }
+
+      const width = Module._demo_width();
+      const height = Module._demo_height();
+      canvas.width = width;
+      canvas.height = height;
+      let imageData = ctx.createImageData(width, height);
+      let shownFrames = 0;
+      let loopStart = performance.now();
+      let fpsWindowStart = loopStart;
+      let fpsWindowFrames = 0;
+      const variantButtons = [];
+
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return "--";
+        if (bytes < 1024) return `${bytes} B`;
+        return `${(bytes / 1024).toFixed(1)} KB`;
+      }
+
+      function updateActiveVariant() {
+        const active = Module._demo_variant();
+        for (const button of variantButtons) {
+          button.setAttribute("aria-pressed", button.dataset.index === String(active));
+        }
+        const name = Module.UTF8ToString(Module._demo_variant_name(active));
+        const src = Module.UTF8ToString(Module._demo_variant_src(active));
+        variantEl.textContent = `${name}: ${src.split("/").pop()}`;
+        lottieSizeEl.textContent = `lottie JSON: ${formatBytes(Module._demo_lottie_size())}`;
+      }
+
+      function selectVariant(index) {
+        const result = Module._demo_select_variant(index);
+        if (result !== 0) {
+          statusEl.textContent = `variant failed: ${result}`;
+          statusEl.className = "pill bad";
+          return;
+        }
+        loopStart = performance.now();
+        fpsWindowStart = loopStart;
+        fpsWindowFrames = 0;
+        shownFrames = 0;
+        fpsEl.textContent = "browser fps: measuring";
+        updateActiveVariant();
+      }
+
+      const variantCount = Module._demo_variant_count();
+      for (let index = 0; index < variantCount; index += 1) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "variant-button";
+        button.dataset.index = String(index);
+        button.textContent = Module.UTF8ToString(Module._demo_variant_name(index));
+        button.addEventListener("click", () => selectVariant(index));
+        variantsEl.appendChild(button);
+        variantButtons.push(button);
+      }
+      updateActiveVariant();
+
+      function draw(now) {
+        const elapsed = (now - loopStart) / 1000;
+        const result = Module._demo_render(elapsed);
+        if (result !== 0) {
+          statusEl.textContent = `render failed: ${result}`;
+          statusEl.className = "pill bad";
+          return;
+        }
+
+        const ptr = Module._demo_buffer();
+        const bytes = new Uint8ClampedArray(Module.HEAPU8.buffer, ptr, width * height * 4);
+        imageData.data.set(bytes);
+        ctx.putImageData(imageData, 0, 0);
+
+        shownFrames += 1;
+        fpsWindowFrames += 1;
+        const fpsWindowMs = now - fpsWindowStart;
+        if (fpsWindowMs >= 750) {
+          const fps = (fpsWindowFrames * 1000) / fpsWindowMs;
+          fpsEl.textContent = `browser fps: ${fps.toFixed(1)}`;
+          fpsWindowStart = now;
+          fpsWindowFrames = 0;
+        }
+        statusEl.textContent = "running";
+        statusEl.className = "pill ok";
+        framesEl.textContent = `browser frames: ${shownFrames}`;
+        providerEl.textContent =
+          `provider: opened ${Module._demo_opened()} / framed ${Module._demo_framed()} / real ${Module._demo_real_framed()} / fallback ${Module._demo_fallback_framed()} / closed ${Module._demo_closed()}`;
+
+        requestAnimationFrame(draw);
+      }
+
+      requestAnimationFrame(draw);
+      globalThis.thorvgVideoDemo = Module;
+      globalThis.thorvgVideoDemoSelect = selectVariant;
+    </script>
+  </body>
+</html>

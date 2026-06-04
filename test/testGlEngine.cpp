@@ -20,15 +20,562 @@
  * SOFTWARE.
  */
 
+#include <cstdio>
+#include <cstring>
+#include <chrono>
 #include <fstream>
+#include <string>
+#include <vector>
+#include "config.h"
 #include <thorvg.h>
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+#include <thorvg_lottie.h>
+#endif
 #include "catch.hpp"
 #include "testGlEngine.h"
+
+#if defined(THORVG_GL_TEST_SUPPORT)
+#if defined(THORVG_GL_TARGET_GLES)
+#include <GLES3/gl3.h>
+#elif defined(__APPLE__)
+#include <OpenGL/gl3.h>
+#else
+#include <GL/gl.h>
+#endif
+#endif
 
 using namespace tvg;
 using namespace std;
 
 #if defined(THORVG_GL_TEST_SUPPORT)
+
+#if defined(THORVG_LOTTIE_LOADER_SUPPORT)
+
+struct GlLottieVideoTestCtx
+{
+    int opened = 0;
+    int framed = 0;
+    int closed = 0;
+    int released = 0;
+    int nativeReturned = 0;
+    uint32_t lastFlags = 0;
+    uint64_t nextSerial = 1;
+    GLuint nativeTexture = 0;
+    bool nativeFrame = false;
+    bool nativeOnly = false;
+    uint32_t pixels[4] = {};
+};
+
+static Result _glVideoOpen(const LottieVideoAssetInfo*, void* data)
+{
+    auto ctx = static_cast<GlLottieVideoTestCtx*>(data);
+    ++ctx->opened;
+    return Result::Success;
+}
+
+static Result _glVideoFrame(const LottieVideoFrameRequest* request, LottieVideoFrame* out, void* data)
+{
+    auto ctx = static_cast<GlLottieVideoTestCtx*>(data);
+    ++ctx->framed;
+    ctx->lastFlags = request->flags;
+
+    const auto color = request->time < 1.0 ? 0xffff0000 : 0xff00ff00;
+    for (auto& pixel : ctx->pixels) pixel = color;
+
+    auto nativeRequested = ctx->nativeFrame && (request->flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::GlTexture));
+    if (ctx->nativeOnly && !nativeRequested) {
+        out->type = LottieVideoFrameType::None;
+        return Result::Success;
+    }
+
+    out->type = nativeRequested ? LottieVideoFrameType::GlTexture : LottieVideoFrameType::Bitmap;
+    out->data = (ctx->nativeOnly && nativeRequested) ? nullptr : ctx->pixels;
+    out->width = 2;
+    out->height = 2;
+    out->colorSpace = ColorSpace::ARGB8888;
+    out->timestamp = request->time;
+    out->duration = 1.0 / 30.0;
+    out->serial = ctx->nextSerial++;
+    if (nativeRequested) {
+        ++ctx->nativeReturned;
+        out->nativeId = ctx->nativeTexture;
+        out->nativeTarget = GL_TEXTURE_2D;
+        out->release = [](void* user) {
+            auto ctx = static_cast<GlLottieVideoTestCtx*>(user);
+            ++ctx->released;
+            if (ctx->nativeTexture != 0) {
+                glDeleteTextures(1, &ctx->nativeTexture);
+                ctx->nativeTexture = 0;
+            }
+        };
+        out->user = data;
+    }
+    return Result::Success;
+}
+
+static void _glVideoClose(const char*, void* data)
+{
+    auto ctx = static_cast<GlLottieVideoTestCtx*>(data);
+    ++ctx->closed;
+}
+
+static void _glVideoLottie(char* out, size_t size)
+{
+    snprintf(out, size, R"({
+        "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+        "assets":[{
+            "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+            "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+        }],
+        "layers":[{
+            "ind":1,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+            "ks":{
+                "o":{"a":0,"k":100},
+                "r":{"a":0,"k":0},
+                "p":{"a":0,"k":[0,0,0]},
+                "a":{"a":0,"k":[0,0,0]},
+                "s":{"a":0,"k":[100,100,100]}
+            }
+        }]
+    })");
+}
+
+static bool _glPixelChanged(const uint8_t* a, const uint8_t* b)
+{
+    return a[0] != b[0] || a[1] != b[1] || a[2] != b[2] || a[3] != b[3];
+}
+
+static bool _glVideoRequestFlag(uint32_t flags, LottieVideoFrameRequestFlag flag)
+{
+    return (flags & static_cast<uint32_t>(flag)) != 0;
+}
+
+static GLuint _glCreateSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    uint8_t pixels[2 * 2 * 4] = {
+        r, g, b, a, r, g, b, a,
+        r, g, b, a, r, g, b, a
+    };
+    GLuint texId = 0;
+    glGenTextures(1, &texId);
+    glBindTexture(GL_TEXTURE_2D, texId);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texId;
+}
+
+TEST_CASE("GL Lottie Video Mutable Texture Refresh", "[tvgGlEngine]")
+{
+    TestGLEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        GlLottieVideoTestCtx ctx;
+        LottieVideoProvider provider = {_glVideoOpen, _glVideoFrame, _glVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+        REQUIRE(canvas);
+        engine.target(canvas.get());
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _glVideoLottie(lottie, sizeof(lottie));
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t first[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, first);
+        REQUIRE(ctx.framed == 2);
+
+        REQUIRE(animation->frame(30.0f) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t second[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, second);
+        REQUIRE(ctx.framed == 3);
+        REQUIRE(_glPixelChanged(first, second));
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("GL Lottie Video Blend Requests Bitmap Fallback", "[tvgGlEngine]")
+{
+    TestGLEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        GlLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+
+        LottieVideoProvider provider = {_glVideoOpen, _glVideoFrame, _glVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        const char* lottie = R"({
+            "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+            "assets":[{
+                "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+                "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+            }],
+            "layers":[{
+                "ind":1,"ty":2,"refId":"video_hero","bm":1,"sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                }
+            }]
+        })";
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+
+        auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+        REQUIRE(canvas);
+        engine.target(canvas.get());
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.framed >= 2);
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Blend));
+        REQUIRE(ctx.nativeReturned == 0);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("GL Lottie Video Matte Source Requests Bitmap Fallback", "[tvgGlEngine]")
+{
+    TestGLEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        GlLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+
+        LottieVideoProvider provider = {_glVideoOpen, _glVideoFrame, _glVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        const char* lottie = R"({
+            "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+            "assets":[{
+                "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+                "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+            }],
+            "layers":[{
+                "ind":1,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                }
+            },{
+                "ind":2,"ty":4,"tt":1,"sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                },
+                "shapes":[{
+                    "ty":"rc","s":{"a":0,"k":[2,2]},"p":{"a":0,"k":[1,1]}
+                },{
+                    "ty":"fl","c":{"a":0,"k":[0,0,1,1]},"o":{"a":0,"k":100}
+                }]
+            }]
+        })";
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Matte));
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+
+        auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+        REQUIRE(canvas);
+        engine.target(canvas.get());
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.framed >= 2);
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Matte));
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+        REQUIRE(ctx.nativeReturned == 0);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("GL Lottie Video Native Texture Import", "[tvgGlEngine]")
+{
+    TestGLEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        GlLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        for (auto& pixel : ctx.pixels) pixel = 0xff000000;
+
+        auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+        REQUIRE(canvas);
+        engine.target(canvas.get());
+
+        ctx.nativeTexture = _glCreateSolidTexture(255, 255, 255, 255);
+        REQUIRE(ctx.nativeTexture != 0);
+
+        LottieVideoProvider provider = {_glVideoOpen, _glVideoFrame, _glVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _glVideoLottie(lottie, sizeof(lottie));
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(ctx.released == 0);
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+        REQUIRE(ctx.framed == 2);
+        REQUIRE(!_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_glVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::GlTexture));
+
+        uint8_t sampled[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sampled);
+        REQUIRE(sampled[0] > 200);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] > 200);
+        REQUIRE(sampled[3] > 200);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.released == 1);
+        REQUIRE(ctx.nativeTexture == 0);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+struct GlVideoBenchmarkCtx
+{
+    vector<uint32_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t serial = 1;
+    uint32_t framed = 0;
+    GLuint nativeTexture = 0;
+};
+
+struct GlVideoBenchmarkResult
+{
+    double avgMs = 0.0;
+    uint32_t framed = 0;
+    uint64_t bytes = 0;
+};
+
+static Result _glBenchmarkVideoOpen(const LottieVideoAssetInfo*, void*)
+{
+    return Result::Success;
+}
+
+static Result _glBenchmarkVideoFrame(const LottieVideoFrameRequest*, LottieVideoFrame* out, void* data)
+{
+    auto ctx = static_cast<GlVideoBenchmarkCtx*>(data);
+    ++ctx->framed;
+    out->type = LottieVideoFrameType::Bitmap;
+    out->data = ctx->pixels.data();
+    out->width = ctx->width;
+    out->height = ctx->height;
+    out->colorSpace = ColorSpace::ARGB8888;
+    out->timestamp = 0.0;
+    out->duration = 1.0 / 30.0;
+    out->serial = ctx->serial++;
+    return Result::Success;
+}
+
+static Result _glBenchmarkNativeVideoFrame(const LottieVideoFrameRequest* request, LottieVideoFrame* out, void* data)
+{
+    auto ctx = static_cast<GlVideoBenchmarkCtx*>(data);
+    ++ctx->framed;
+    if (!(request->flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::GlTexture)) || ctx->nativeTexture == 0) {
+        out->type = LottieVideoFrameType::None;
+        return Result::Success;
+    }
+
+    out->type = LottieVideoFrameType::GlTexture;
+    out->width = 2;
+    out->height = 2;
+    out->colorSpace = ColorSpace::ARGB8888;
+    out->timestamp = request->time;
+    out->duration = 1.0 / 30.0;
+    out->serial = ctx->serial++;
+    out->nativeId = ctx->nativeTexture;
+    out->nativeTarget = GL_TEXTURE_2D;
+    return Result::Success;
+}
+
+static string _glBenchmarkVideoLottie(uint32_t width, uint32_t height)
+{
+    string ret = "{\"v\":\"5.8.0\",\"fr\":30,\"ip\":0,\"op\":120,\"w\":";
+    ret += to_string(width);
+    ret += ",\"h\":";
+    ret += to_string(height);
+    ret += ",\"assets\":[{\"id\":\"video_hero\",\"w\":";
+    ret += to_string(width);
+    ret += ",\"h\":";
+    ret += to_string(height);
+    ret += ",\"u\":\"\",\"p\":\"poster.raw\",\"e\":0,"
+           "\"x-video\":{\"src\":\"video.mp4\",\"mime\":\"video/mp4\",\"duration\":4,\"frameRate\":30,\"loop\":true,\"holdLastFrame\":true,\"muted\":true}}],"
+           "\"layers\":[{\"ind\":1,\"ty\":2,\"refId\":\"video_hero\",\"sr\":1,\"ip\":0,\"op\":120,\"st\":0,"
+           "\"ks\":{\"o\":{\"a\":0,\"k\":100},\"r\":{\"a\":0,\"k\":0},"
+           "\"p\":{\"a\":0,\"k\":[0,0,0]},\"a\":{\"a\":0,\"k\":[0,0,0]},"
+           "\"s\":{\"a\":0,\"k\":[100,100,100]}}}]}";
+    return ret;
+}
+
+static GlVideoBenchmarkResult _runGlBitmapBenchmark(uint32_t width, uint32_t height, uint32_t iterations)
+{
+    TestGLEngine engine(width, height);
+
+    GlVideoBenchmarkCtx ctx;
+    ctx.width = width;
+    ctx.height = height;
+    auto count = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    ctx.pixels.resize(static_cast<size_t>(count), 0xffff0000);
+
+    auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+    REQUIRE(animation);
+    LottieVideoProvider provider = {_glBenchmarkVideoOpen, _glBenchmarkVideoFrame, nullptr, &ctx};
+    REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+    auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+    REQUIRE(canvas);
+    engine.target(canvas.get());
+
+    auto picture = animation->picture();
+    auto lottie = _glBenchmarkVideoLottie(width, height);
+    REQUIRE(picture->load(lottie.c_str(), lottie.size(), "lot", TEST_DIR, true) == Result::Success);
+    REQUIRE(canvas->add(picture) == Result::Success);
+    REQUIRE(canvas->draw(true) == Result::Success);
+    REQUIRE(canvas->sync() == Result::Success);
+
+    auto begin = chrono::steady_clock::now();
+    for (uint32_t i = 0; i < iterations; ++i) {
+        REQUIRE(animation->frame(static_cast<float>(i + 1)) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+    }
+    auto end = chrono::steady_clock::now();
+    chrono::duration<double, milli> elapsed = end - begin;
+
+    return {elapsed.count() / double(iterations), ctx.framed, count * sizeof(uint32_t)};
+}
+
+static GlVideoBenchmarkResult _runGlNativeBenchmark(uint32_t iterations)
+{
+    TestGLEngine engine(2, 2);
+
+    auto canvas = unique_ptr<GlCanvas>(GlCanvas::gen());
+    REQUIRE(canvas);
+    engine.target(canvas.get());
+
+    GlVideoBenchmarkCtx ctx;
+    ctx.nativeTexture = _glCreateSolidTexture(255, 255, 255, 255);
+    REQUIRE(ctx.nativeTexture != 0);
+
+    auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+    REQUIRE(animation);
+    LottieVideoProvider provider = {_glBenchmarkVideoOpen, _glBenchmarkNativeVideoFrame, nullptr, &ctx};
+    REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+    auto picture = animation->picture();
+    char lottie[2048];
+    _glVideoLottie(lottie, sizeof(lottie));
+    REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+    REQUIRE(canvas->add(picture) == Result::Success);
+    REQUIRE(canvas->draw(true) == Result::Success);
+    REQUIRE(canvas->sync() == Result::Success);
+
+    auto begin = chrono::steady_clock::now();
+    for (uint32_t i = 0; i < iterations; ++i) {
+        REQUIRE(animation->frame(static_cast<float>(i + 1)) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+    }
+    auto end = chrono::steady_clock::now();
+    chrono::duration<double, milli> elapsed = end - begin;
+
+    REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+    glDeleteTextures(1, &ctx.nativeTexture);
+    ctx.nativeTexture = 0;
+
+    return {elapsed.count() / double(iterations), ctx.framed, 2 * 2 * sizeof(uint32_t)};
+}
+
+TEST_CASE("GL Performance Benchmarks For Lottie Video", "[.][benchmark][lottieVideo][tvgGlEngine]")
+{
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        auto bitmap720 = _runGlBitmapBenchmark(1280, 720, 2);
+        WARN("gl bitmap texture refresh 720p: " << bitmap720.avgMs << " ms/frame, provider frames="
+                                                << bitmap720.framed << ", bytes=" << bitmap720.bytes);
+
+        auto bitmap1080 = _runGlBitmapBenchmark(1920, 1080, 2);
+        WARN("gl bitmap texture refresh 1080p: " << bitmap1080.avgMs << " ms/frame, provider frames="
+                                                 << bitmap1080.framed << ", bytes=" << bitmap1080.bytes);
+
+        auto native = _runGlNativeBenchmark(2);
+        WARN("gl native texture import baseline: " << native.avgMs << " ms/frame, provider frames="
+                                                   << native.framed << ", bytes=" << native.bytes);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+#endif
 
 TEST_CASE("GL Basic draw", "[tvgGlEngine]")
 {

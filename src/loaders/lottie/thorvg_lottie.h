@@ -162,6 +162,26 @@ public:
     Result quality(uint8_t value) noexcept;
 
     /**
+     * @brief Sets the provider used to render video-capable Lottie image assets.
+     *
+     * The provider is called when an image asset contains an @c x-video extension.
+     * ThorVG does not decode media files; it asks this provider for decoded frames
+     * that match the current Lottie timeline. Bitmap frames are consumed by the
+     * portable rendering path; GL/WebGPU texture frames may be sampled by matching
+     * backends when the frame request advertises that native texture type.
+     * Provider callbacks may run on ThorVG's Lottie update task thread, so they
+     * should be bounded and thread-safe.
+     *
+     * @param[in] provider The provider callback table. Pass @c nullptr to unset it.
+     *
+     * @retval Result::Success The provider was set or cleared.
+     *
+     * @note Set the provider before loading a Lottie picture so the initial frame can use it.
+     * @note Experimental API
+     */
+    Result videoProvider(const LottieVideoProvider* provider) noexcept;
+
+    /**
      * @brief Creates a new LottieAnimation object.
      *
      * @return A new LottieAnimation object.

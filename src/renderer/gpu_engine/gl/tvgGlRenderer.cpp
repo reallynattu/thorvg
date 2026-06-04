@@ -1262,15 +1262,29 @@ RenderData GlRenderer::prepare(RenderSurface* image, RenderData data, const Matr
     sdata->viewWd = static_cast<float>(surface.w);
     sdata->viewHt = static_cast<float>(surface.h);
 
-    auto sourceChanged = (sdata->texSource != image) || (sdata->texFilter != filter);
+    auto sourceChanged = (sdata->texSource != image) || (sdata->texFilter != filter) ||
+                         (sdata->texNativeType != image->nativeType) ||
+                         (sdata->texNativeId != image->nativeId) ||
+                         (sdata->texNativeTarget != image->nativeTarget);
+    auto sourceDirty = !sourceChanged && (sdata->texSerial != image->serial);
     if (sdata->texId == 0 || sourceChanged || cacheStale) {
         auto ownsTexture = sdata->texId && (sdata->texStamp == mTextures.stamp);
         if (ownsTexture) disposeTexture(mTextures.release(sdata->texSource, sdata->texFilter, sdata->texId));
         sdata->texId = mTextures.retain(image, filter);
         sdata->texSource = image;
         sdata->texFilter = filter;
+        sdata->texSerial = image->serial;
+        sdata->texNativeType = image->nativeType;
+        sdata->texNativeId = image->nativeId;
+        sdata->texNativeTarget = image->nativeTarget;
         sdata->texStamp = mTextures.stamp;
         sdata->geometry = GlGeometry();
+    } else if (sourceDirty) {
+        mTextures.update(image, filter, sdata->texId);
+        sdata->texSerial = image->serial;
+        sdata->texNativeType = image->nativeType;
+        sdata->texNativeId = image->nativeId;
+        sdata->texNativeTarget = image->nativeTarget;
     }
 
     sdata->texColorSpace = image->cs;

@@ -119,10 +119,15 @@ struct WgRenderDataPicture: public WgRenderDataPaint
     const RenderSurface* imageSource = nullptr;
     FilterMethod imageFilter = FilterMethod::Bilinear;
     uint16_t imageStamp = 0;
+    uint64_t imageSerial = 0;
+    RenderSurfaceNativeType imageNativeType = RenderSurfaceNativeType::None;
+    void* imageNativeHandle = nullptr;
+    uintptr_t imageNativeId = 0;
+    uint32_t imageNativeTarget = 0;
     WgMeshData meshData{};
 
     void updateSurface(const RenderSurface* surface, const Matrix& transform);
-    void setImage(WGPUTexture texture, WGPUBindGroup bindGroup, const RenderSurface* surface, FilterMethod filter, uint16_t stamp);
+    void setImage(WGPUTexture texture, WGPUBindGroup bindGroup, const RenderSurface* surface, FilterMethod filter, uint16_t stamp, uint64_t serial);
     void releaseTexture(WgTextureMgr& textures, WgContext& context);
     void clearImage();
     void release(WgContext& context) override;

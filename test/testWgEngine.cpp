@@ -20,8 +20,17 @@
  * SOFTWARE.
  */
 
+#include <cstdio>
+#include <cstring>
+#include <chrono>
 #include <fstream>
+#include <vector>
+#include "config.h"
 #include <thorvg.h>
+#ifdef THORVG_LOTTIE_LOADER_SUPPORT
+#include <thorvg_lottie.h>
+#endif
+#include <webgpu/wgpu.h>
 #include "catch.hpp"
 #include "testWgEngine.h"
 
@@ -29,6 +38,901 @@ using namespace tvg;
 using namespace std;
 
 #if defined(THORVG_WG_TEST_SUPPORT)
+
+#if defined(THORVG_LOTTIE_LOADER_SUPPORT)
+
+struct WgLottieVideoTestCtx;
+
+struct WgLottieVideoFrameRef
+{
+    WgLottieVideoTestCtx* ctx = nullptr;
+    WGPUTexture texture = nullptr;
+};
+
+struct WgLottieVideoTestCtx
+{
+    int opened = 0;
+    int framed = 0;
+    int closed = 0;
+    int released = 0;
+    int nativeReturned = 0;
+    uint32_t lastFlags = 0;
+    uint64_t nextSerial = 1;
+    WGPUTexture nativeTexture = nullptr;
+    WGPUTexture nativeTextures[2] = {};
+    uint32_t nativeTextureCount = 0;
+    uint32_t nativeTextureCursor = 0;
+    WgLottieVideoFrameRef nativeRefs[16] = {};
+    uint32_t nativeRefCursor = 0;
+    bool fixedSerial = false;
+    uint64_t fixedSerialValue = 1;
+    bool nativeFrame = false;
+    bool nativeOnly = false;
+    bool destroyOnRelease = false;
+    bool omitRelease = false;
+    uint32_t bitmapColor = 0xffffffff;
+    uint32_t pixels[4] = {};
+};
+
+static void _wgDestroyTexture(WGPUTexture& texture)
+{
+    if (!texture) return;
+    wgpuTextureDestroy(texture);
+    wgpuTextureRelease(texture);
+    texture = nullptr;
+}
+
+static Result _wgVideoOpen(const LottieVideoAssetInfo*, void* data)
+{
+    auto ctx = static_cast<WgLottieVideoTestCtx*>(data);
+    ++ctx->opened;
+    return Result::Success;
+}
+
+static Result _wgVideoFrame(const LottieVideoFrameRequest* request, LottieVideoFrame* out, void* data)
+{
+    auto ctx = static_cast<WgLottieVideoTestCtx*>(data);
+    ++ctx->framed;
+    ctx->lastFlags = request->flags;
+
+    for (auto& pixel : ctx->pixels) pixel = ctx->bitmapColor;
+
+    auto nativeRequested = ctx->nativeFrame && (request->flags & static_cast<uint32_t>(LottieVideoFrameRequestFlag::WgTexture));
+    if (ctx->nativeOnly && !nativeRequested) {
+        out->type = LottieVideoFrameType::None;
+        return Result::Success;
+    }
+
+    out->type = nativeRequested ? LottieVideoFrameType::WgTexture : LottieVideoFrameType::Bitmap;
+    out->data = (ctx->nativeOnly && nativeRequested) ? nullptr : ctx->pixels;
+    out->width = 2;
+    out->height = 2;
+    out->colorSpace = ColorSpace::ABGR8888;
+    out->timestamp = request->time;
+    out->duration = 1.0 / 30.0;
+    out->serial = ctx->fixedSerial ? ctx->fixedSerialValue : ctx->nextSerial++;
+    if (nativeRequested) {
+        ++ctx->nativeReturned;
+        auto nativeTexture = ctx->nativeTexture;
+        if (ctx->nativeTextureCount > 0) {
+            auto idx = ctx->nativeTextureCursor;
+            if (idx >= ctx->nativeTextureCount) idx = ctx->nativeTextureCount - 1;
+            nativeTexture = ctx->nativeTextures[idx];
+            if (ctx->nativeTextureCursor < ctx->nativeTextureCount) ++ctx->nativeTextureCursor;
+        }
+        out->nativeHandle = nativeTexture;
+        if (!ctx->omitRelease) {
+            out->release = [](void* user) {
+                auto ref = static_cast<WgLottieVideoFrameRef*>(user);
+                auto ctx = ref->ctx;
+                if (!ctx) return;
+                ++ctx->released;
+                if (ctx->destroyOnRelease && ref->texture) {
+                    auto texture = ref->texture;
+                    if (ctx->nativeTexture == texture) ctx->nativeTexture = nullptr;
+                    for (auto& nativeTexture : ctx->nativeTextures) {
+                        if (nativeTexture == texture) nativeTexture = nullptr;
+                    }
+                    wgpuTextureDestroy(texture);
+                    wgpuTextureRelease(texture);
+                    ref->texture = nullptr;
+                }
+                ref->ctx = nullptr;
+            };
+            auto ref = &ctx->nativeRefs[ctx->nativeRefCursor++ % 16];
+            ref->ctx = ctx;
+            ref->texture = nativeTexture;
+            out->user = ref;
+        }
+    }
+    return Result::Success;
+}
+
+static void _wgVideoClose(const char*, void* data)
+{
+    auto ctx = static_cast<WgLottieVideoTestCtx*>(data);
+    ++ctx->closed;
+}
+
+static void _wgVideoLottie(char* out, size_t size)
+{
+    snprintf(out, size, R"({
+        "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+        "assets":[{
+            "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+            "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+        }],
+        "layers":[{
+            "ind":1,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+            "ks":{
+                "o":{"a":0,"k":100},
+                "r":{"a":0,"k":0},
+                "p":{"a":0,"k":[0,0,0]},
+                "a":{"a":0,"k":[0,0,0]},
+                "s":{"a":0,"k":[100,100,100]}
+            }
+        }]
+    })");
+}
+
+static void _wgSharedVideoLottie(char* out, size_t size)
+{
+    snprintf(out, size, R"({
+        "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+        "assets":[{
+            "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+            "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+        }],
+        "layers":[{
+            "ind":1,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+            "ks":{
+                "o":{"a":0,"k":100},
+                "r":{"a":0,"k":0},
+                "p":{"a":0,"k":[0,0,0]},
+                "a":{"a":0,"k":[0,0,0]},
+                "s":{"a":0,"k":[100,100,100]}
+            }
+        },{
+            "ind":2,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+            "ks":{
+                "o":{"a":0,"k":100},
+                "r":{"a":0,"k":0},
+                "p":{"a":0,"k":[0,0,0]},
+                "a":{"a":0,"k":[0,0,0]},
+                "s":{"a":0,"k":[100,100,100]}
+            }
+        }]
+    })");
+}
+
+static bool _wgVideoRequestFlag(uint32_t flags, LottieVideoFrameRequestFlag flag)
+{
+    return (flags & static_cast<uint32_t>(flag)) != 0;
+}
+
+static WGPUTexture _wgCreateSolidTexture(WGPUDevice device, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    uint8_t pixels[2 * 2 * 4] = {
+        r, g, b, a, r, g, b, a,
+        r, g, b, a, r, g, b, a
+    };
+
+    WGPUTextureDescriptor textureDesc = {};
+    textureDesc.usage = WGPUTextureUsage_CopyDst | WGPUTextureUsage_TextureBinding;
+    textureDesc.dimension = WGPUTextureDimension_2D;
+    textureDesc.size.width = 2;
+    textureDesc.size.height = 2;
+    textureDesc.size.depthOrArrayLayers = 1;
+    textureDesc.format = WGPUTextureFormat_RGBA8Unorm;
+    textureDesc.mipLevelCount = 1;
+    textureDesc.sampleCount = 1;
+
+    auto texture = wgpuDeviceCreateTexture(device, &textureDesc);
+    if (!texture) return nullptr;
+
+    auto queue = wgpuDeviceGetQueue(device);
+    const WGPUTexelCopyTextureInfo copyTextureInfo{ .texture = texture };
+    const WGPUTexelCopyBufferLayout copyBufferLayout{ .bytesPerRow = 2 * 4, .rowsPerImage = 2 };
+    const WGPUExtent3D writeSize{ .width = 2, .height = 2, .depthOrArrayLayers = 1 };
+    wgpuQueueWriteTexture(queue, &copyTextureInfo, pixels, sizeof(pixels), &copyBufferLayout, &writeSize);
+    wgpuQueueRelease(queue);
+
+    return texture;
+}
+
+static bool _wgReadFirstPixel(TestWgEngine& engine, uint8_t pixel[4])
+{
+    constexpr uint32_t BytesPerRow = 256;
+    constexpr uint64_t BufferSize = BytesPerRow;
+
+    WGPUBufferDescriptor bufferDesc = {};
+    bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    bufferDesc.size = BufferSize;
+    auto buffer = wgpuDeviceCreateBuffer(engine.device, &bufferDesc);
+    if (!buffer) return false;
+
+    WGPUCommandEncoderDescriptor encoderDesc = {};
+    auto encoder = wgpuDeviceCreateCommandEncoder(engine.device, &encoderDesc);
+    if (!encoder) {
+        wgpuBufferRelease(buffer);
+        return false;
+    }
+
+    WGPUTexelCopyTextureInfo source = {};
+    source.texture = engine.texture;
+    WGPUTexelCopyBufferInfo destination = {};
+    destination.buffer = buffer;
+    destination.layout.bytesPerRow = BytesPerRow;
+    destination.layout.rowsPerImage = 1;
+    WGPUExtent3D copySize = {};
+    copySize.width = 1;
+    copySize.height = 1;
+    copySize.depthOrArrayLayers = 1;
+    wgpuCommandEncoderCopyTextureToBuffer(encoder, &source, &destination, &copySize);
+
+    WGPUCommandBufferDescriptor commandDesc = {};
+    auto command = wgpuCommandEncoderFinish(encoder, &commandDesc);
+    wgpuCommandEncoderRelease(encoder);
+    if (!command) {
+        wgpuBufferRelease(buffer);
+        return false;
+    }
+
+    auto queue = wgpuDeviceGetQueue(engine.device);
+    wgpuQueueSubmit(queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuQueueRelease(queue);
+
+    struct MapState
+    {
+        bool done = false;
+        WGPUMapAsyncStatus status = WGPUMapAsyncStatus_Unknown;
+    } state;
+
+    WGPUBufferMapCallbackInfo callbackInfo = {};
+    callbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
+    callbackInfo.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* userdata1, void*) {
+        auto state = static_cast<MapState*>(userdata1);
+        state->status = status;
+        state->done = true;
+    };
+    callbackInfo.userdata1 = &state;
+
+    wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, BufferSize, callbackInfo);
+
+    for (uint32_t i = 0; i < 1000 && !state.done; ++i) {
+        wgpuDevicePoll(engine.device, true, nullptr);
+    }
+
+    auto success = state.done && state.status == WGPUMapAsyncStatus_Success;
+    if (success) {
+        auto data = static_cast<const uint8_t*>(wgpuBufferGetMappedRange(buffer, 0, 4));
+        if (data) memcpy(pixel, data, 4);
+        else success = false;
+    }
+
+    if (success) wgpuBufferUnmap(buffer);
+    wgpuBufferRelease(buffer);
+    return success;
+}
+
+TEST_CASE("WG Lottie Video Native Texture Import", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        ctx.nativeTexture = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        REQUIRE(ctx.nativeTexture);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _wgVideoLottie(lottie, sizeof(lottie));
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.opened == 1);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(ctx.released == 0);
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.framed >= 2);
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+        REQUIRE(ctx.nativeReturned >= 1);
+
+        uint8_t sampled[4] = {};
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] > 200);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] > 200);
+        REQUIRE(sampled[3] > 200);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+        REQUIRE(ctx.released == ctx.nativeReturned);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTexture);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Native Texture Replacement Release", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        ctx.destroyOnRelease = true;
+        ctx.nativeTextureCount = 2;
+        ctx.nativeTextures[0] = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        ctx.nativeTextures[1] = _wgCreateSolidTexture(engine.device, 0, 255, 0, 255);
+        REQUIRE(ctx.nativeTextures[0]);
+        REQUIRE(ctx.nativeTextures[1]);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _wgVideoLottie(lottie, sizeof(lottie));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t sampled[4] = {};
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] > 200);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] > 200);
+        REQUIRE(sampled[3] > 200);
+
+        REQUIRE(animation->frame(30.0f) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.released >= 1);
+        REQUIRE(ctx.nativeTextures[0] == nullptr);
+
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] < 80);
+        REQUIRE(sampled[1] > 180);
+        REQUIRE(sampled[2] < 80);
+        REQUIRE(sampled[3] > 200);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+        REQUIRE(ctx.released == ctx.nativeReturned);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTextures[0]);
+        _wgDestroyTexture(ctx.nativeTextures[1]);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Blend Requests Bitmap Fallback", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.bitmapColor = 0xffff0000;
+        ctx.nativeTexture = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        REQUIRE(ctx.nativeTexture);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        const char* lottie = R"({
+            "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+            "assets":[{
+                "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+                "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+            }],
+            "layers":[{
+                "ind":1,"ty":2,"refId":"video_hero","bm":1,"sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                }
+            }]
+        })";
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.framed >= 2);
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Blend));
+        REQUIRE(ctx.nativeReturned == 0);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTexture);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Matte Source Requests Bitmap Fallback", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.bitmapColor = 0xffffffff;
+        ctx.nativeTexture = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        REQUIRE(ctx.nativeTexture);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        const char* lottie = R"({
+            "v":"5.8.0","fr":30,"ip":0,"op":60,"w":2,"h":2,
+            "assets":[{
+                "id":"video_hero","w":2,"h":2,"u":"","p":"poster.raw","e":0,
+                "x-video":{"src":"video.mp4","mime":"video/mp4","duration":2,"frameRate":30,"loop":false,"holdLastFrame":true,"muted":true}
+            }],
+            "layers":[{
+                "ind":1,"ty":2,"refId":"video_hero","sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                }
+            },{
+                "ind":2,"ty":4,"tt":1,"sr":1,"ip":0,"op":60,"st":0,
+                "ks":{
+                    "o":{"a":0,"k":100},
+                    "r":{"a":0,"k":0},
+                    "p":{"a":0,"k":[0,0,0]},
+                    "a":{"a":0,"k":[0,0,0]},
+                    "s":{"a":0,"k":[100,100,100]}
+                },
+                "shapes":[{
+                    "ty":"rc","s":{"a":0,"k":[2,2]},"p":{"a":0,"k":[1,1]}
+                },{
+                    "ty":"fl","c":{"a":0,"k":[0,0,1,1]},"o":{"a":0,"k":100}
+                }]
+            }]
+        })";
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(ctx.framed == 1);
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Matte));
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        REQUIRE(ctx.framed >= 2);
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::BitmapRequired));
+        REQUIRE(_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::Matte));
+        REQUIRE(!_wgVideoRequestFlag(ctx.lastFlags, LottieVideoFrameRequestFlag::WgTexture));
+        REQUIRE(ctx.nativeReturned == 0);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTexture);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Native Texture Clear Release", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        ctx.destroyOnRelease = true;
+        ctx.nativeTextureCount = 1;
+        ctx.nativeTextures[0] = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        REQUIRE(ctx.nativeTextures[0]);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _wgVideoLottie(lottie, sizeof(lottie));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t sampled[4] = {};
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] > 200);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] > 200);
+        REQUIRE(sampled[3] > 200);
+        REQUIRE(ctx.nativeReturned == 1);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+        REQUIRE(ctx.released == 1);
+        REQUIRE(ctx.nativeTextures[0] == nullptr);
+
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTextures[0]);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Native Texture Without Release Callback Clear", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        ctx.omitRelease = true;
+        ctx.nativeTexture = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        REQUIRE(ctx.nativeTexture);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[2048];
+        _wgVideoLottie(lottie, sizeof(lottie));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t sampled[4] = {};
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] > 200);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] > 200);
+        REQUIRE(sampled[3] > 200);
+        REQUIRE(ctx.nativeReturned == 1);
+        REQUIRE(ctx.released == 0);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+        REQUIRE(ctx.released == 0);
+
+        _wgDestroyTexture(ctx.nativeTexture);
+
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTexture);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+TEST_CASE("WG Lottie Video Shared Native Texture Clear Release", "[tvgWgEngine]")
+{
+    TestWgEngine engine(2, 2);
+
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        WgLottieVideoTestCtx ctx;
+        ctx.nativeFrame = true;
+        ctx.nativeOnly = true;
+        ctx.destroyOnRelease = true;
+        ctx.fixedSerial = true;
+        ctx.nativeTextureCount = 2;
+        ctx.nativeTextures[0] = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+        ctx.nativeTextures[1] = _wgCreateSolidTexture(engine.device, 0, 255, 0, 255);
+        REQUIRE(ctx.nativeTextures[0]);
+        REQUIRE(ctx.nativeTextures[1]);
+
+        LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+
+        auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+        REQUIRE(animation);
+        REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+        auto picture = animation->picture();
+        char lottie[4096];
+        _wgSharedVideoLottie(lottie, sizeof(lottie));
+
+        auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+        REQUIRE(canvas);
+        REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+        REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+        REQUIRE(canvas->add(picture) == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        uint8_t sampled[4] = {};
+        REQUIRE(_wgReadFirstPixel(engine, sampled));
+        REQUIRE(sampled[0] < 80);
+        REQUIRE(sampled[1] > 200);
+        REQUIRE(sampled[2] < 80);
+        REQUIRE(sampled[3] > 200);
+        REQUIRE(ctx.nativeReturned >= 2);
+        REQUIRE(ctx.released == 0);
+        REQUIRE(ctx.nativeTextures[0] != nullptr);
+        REQUIRE(ctx.nativeTextures[1] != nullptr);
+
+        REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+        REQUIRE(ctx.closed == 1);
+        REQUIRE(ctx.released == ctx.nativeReturned);
+        REQUIRE(ctx.nativeTextures[0] == nullptr);
+        REQUIRE(ctx.nativeTextures[1] == nullptr);
+
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+
+        canvas.reset();
+        animation.reset();
+
+        _wgDestroyTexture(ctx.nativeTextures[0]);
+        _wgDestroyTexture(ctx.nativeTextures[1]);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+struct WgVideoBenchmarkCtx
+{
+    vector<uint32_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t serial = 1;
+    uint32_t framed = 0;
+};
+
+struct WgVideoBenchmarkResult
+{
+    double avgMs = 0.0;
+    uint32_t framed = 0;
+    uint64_t bytes = 0;
+};
+
+static Result _wgBenchmarkVideoOpen(const LottieVideoAssetInfo*, void*)
+{
+    return Result::Success;
+}
+
+static Result _wgBenchmarkVideoFrame(const LottieVideoFrameRequest*, LottieVideoFrame* out, void* data)
+{
+    auto ctx = static_cast<WgVideoBenchmarkCtx*>(data);
+    ++ctx->framed;
+    out->type = LottieVideoFrameType::Bitmap;
+    out->data = ctx->pixels.data();
+    out->width = ctx->width;
+    out->height = ctx->height;
+    out->colorSpace = ColorSpace::ARGB8888;
+    out->timestamp = 0.0;
+    out->duration = 1.0 / 30.0;
+    out->serial = ctx->serial++;
+    return Result::Success;
+}
+
+static string _wgBenchmarkVideoLottie(uint32_t width, uint32_t height)
+{
+    string ret = "{\"v\":\"5.8.0\",\"fr\":30,\"ip\":0,\"op\":120,\"w\":";
+    ret += to_string(width);
+    ret += ",\"h\":";
+    ret += to_string(height);
+    ret += ",\"assets\":[{\"id\":\"video_hero\",\"w\":";
+    ret += to_string(width);
+    ret += ",\"h\":";
+    ret += to_string(height);
+    ret += ",\"u\":\"\",\"p\":\"poster.raw\",\"e\":0,"
+           "\"x-video\":{\"src\":\"video.mp4\",\"mime\":\"video/mp4\",\"duration\":4,\"frameRate\":30,\"loop\":true,\"holdLastFrame\":true,\"muted\":true}}],"
+           "\"layers\":[{\"ind\":1,\"ty\":2,\"refId\":\"video_hero\",\"sr\":1,\"ip\":0,\"op\":120,\"st\":0,"
+           "\"ks\":{\"o\":{\"a\":0,\"k\":100},\"r\":{\"a\":0,\"k\":0},"
+           "\"p\":{\"a\":0,\"k\":[0,0,0]},\"a\":{\"a\":0,\"k\":[0,0,0]},"
+           "\"s\":{\"a\":0,\"k\":[100,100,100]}}}]}";
+    return ret;
+}
+
+static WgVideoBenchmarkResult _runWgBitmapBenchmark(uint32_t width, uint32_t height, uint32_t iterations)
+{
+    TestWgEngine engine(width, height);
+
+    WgVideoBenchmarkCtx ctx;
+    ctx.width = width;
+    ctx.height = height;
+    auto count = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    ctx.pixels.resize(static_cast<size_t>(count), 0xffff0000);
+
+    auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+    REQUIRE(animation);
+    LottieVideoProvider provider = {_wgBenchmarkVideoOpen, _wgBenchmarkVideoFrame, nullptr, &ctx};
+    REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+    auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+    REQUIRE(canvas);
+    REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+    auto picture = animation->picture();
+    auto lottie = _wgBenchmarkVideoLottie(width, height);
+    REQUIRE(picture->load(lottie.c_str(), lottie.size(), "lot", TEST_DIR, true) == Result::Success);
+    REQUIRE(canvas->add(picture) == Result::Success);
+    REQUIRE(canvas->draw(true) == Result::Success);
+    REQUIRE(canvas->sync() == Result::Success);
+
+    auto begin = chrono::steady_clock::now();
+    for (uint32_t i = 0; i < iterations; ++i) {
+        REQUIRE(animation->frame(static_cast<float>(i + 1)) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+    }
+    auto end = chrono::steady_clock::now();
+    chrono::duration<double, milli> elapsed = end - begin;
+
+    return {elapsed.count() / double(iterations), ctx.framed, count * sizeof(uint32_t)};
+}
+
+static WgVideoBenchmarkResult _runWgNativeBenchmark(uint32_t iterations)
+{
+    TestWgEngine engine(2, 2);
+
+    WgLottieVideoTestCtx ctx;
+    ctx.nativeFrame = true;
+    ctx.nativeOnly = true;
+    ctx.omitRelease = true;
+    ctx.nativeTexture = _wgCreateSolidTexture(engine.device, 255, 255, 255, 255);
+    REQUIRE(ctx.nativeTexture);
+
+    auto animation = unique_ptr<LottieAnimation>(LottieAnimation::gen());
+    REQUIRE(animation);
+    LottieVideoProvider provider = {_wgVideoOpen, _wgVideoFrame, _wgVideoClose, &ctx};
+    REQUIRE(animation->videoProvider(&provider) == Result::Success);
+
+    auto canvas = unique_ptr<WgCanvas>(WgCanvas::gen());
+    REQUIRE(canvas);
+    REQUIRE(engine.target(canvas.get()) == Result::Success);
+
+    auto picture = animation->picture();
+    char lottie[2048];
+    _wgVideoLottie(lottie, sizeof(lottie));
+    REQUIRE(picture->load(lottie, strlen(lottie), "lot", TEST_DIR, true) == Result::Success);
+    REQUIRE(canvas->add(picture) == Result::Success);
+    REQUIRE(canvas->draw(true) == Result::Success);
+    REQUIRE(canvas->sync() == Result::Success);
+
+    auto begin = chrono::steady_clock::now();
+    for (uint32_t i = 0; i < iterations; ++i) {
+        REQUIRE(animation->frame(static_cast<float>(i + 1)) == Result::Success);
+        REQUIRE(canvas->update() == Result::Success);
+        REQUIRE(canvas->draw(true) == Result::Success);
+        REQUIRE(canvas->sync() == Result::Success);
+    }
+    auto end = chrono::steady_clock::now();
+    chrono::duration<double, milli> elapsed = end - begin;
+
+    REQUIRE(animation->videoProvider(nullptr) == Result::Success);
+    _wgDestroyTexture(ctx.nativeTexture);
+
+    return {elapsed.count() / double(iterations), static_cast<uint32_t>(ctx.framed), 2 * 2 * sizeof(uint32_t)};
+}
+
+TEST_CASE("WG Performance Benchmarks For Lottie Video", "[.][benchmark][lottieVideo][tvgWgEngine]")
+{
+    REQUIRE(Initializer::init() == Result::Success);
+    {
+        auto bitmap720 = _runWgBitmapBenchmark(1280, 720, 2);
+        WARN("wg bitmap texture refresh 720p: " << bitmap720.avgMs << " ms/frame, provider frames="
+                                                << bitmap720.framed << ", bytes=" << bitmap720.bytes);
+
+        auto bitmap1080 = _runWgBitmapBenchmark(1920, 1080, 2);
+        WARN("wg bitmap texture refresh 1080p: " << bitmap1080.avgMs << " ms/frame, provider frames="
+                                                 << bitmap1080.framed << ", bytes=" << bitmap1080.bytes);
+
+        auto native = _runWgNativeBenchmark(2);
+        WARN("wg native texture import baseline: " << native.avgMs << " ms/frame, provider frames="
+                                                   << native.framed << ", bytes=" << native.bytes);
+    }
+    REQUIRE(Initializer::term() == Result::Success);
+}
+
+#endif
 
 TEST_CASE("WG Basic draw", "[tvgWgEngine]")
 {
